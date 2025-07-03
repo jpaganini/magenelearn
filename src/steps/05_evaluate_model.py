@@ -101,10 +101,40 @@ def get_cv_iterator(y: np.ndarray, groups: np.ndarray, n_splits):
     sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=RSEED)
     return list(sgkf.split(np.zeros_like(y), y, groups))
 
-def predict_with_pipeline(
-    pipeline, X: pd.DataFrame
-) -> Tuple[np.ndarray, np.ndarray]:
-    return pipeline.predict(X), pipeline.predict_proba(X)
+
+def predict_with_pipeline(pipeline, X):
+    """
+    Make predictions and probabilities using the trained pipeline,
+    aligning feature columns to the model's expected order.
+    """
+    # Align columns to match the model's training feature names
+# Unwrap the underlying XGB booster
+    try:
+        booster = pipeline.get_booster()
+    except AttributeError:
+     # If wrapped in an sklearn Pipeline under key 'model'
+        if hasattr(pipeline, 'named_steps') and 'model' in pipeline.named_steps:
+            booster = pipeline.named_steps['model'].get_booster()
+        else:
+            booster = pipeline.get_booster()
+
+    expected = booster.feature_names
+    actual = list(X.columns)
+
+    missing = set(expected) - set(actual)
+    extra   = set(actual)   - set(expected)
+    if missing:
+        raise ValueError(f"Missing features for prediction: {missing}")
+    if extra:
+        # Drop any extra columns not used in the model
+        X = X.drop(columns=list(extra))
+    # Reorder columns to exactly match expected
+    X = X[expected]
+
+    # Now predict
+    preds  = pipeline.predict(X)
+    probas = pipeline.predict_proba(X)
+    return preds, probas
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │                          core evaluation loop                           │
