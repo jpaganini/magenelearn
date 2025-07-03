@@ -104,19 +104,18 @@ def get_cv_iterator(y: np.ndarray, groups: np.ndarray, n_splits):
 
 def predict_with_pipeline(pipeline, X):
     """
-    Make predictions and probabilities using the trained pipeline,
+    Make predictions and probabilities using the trained pipeline or raw XGB model,
     aligning feature columns to the model's expected order.
     """
-    # Align columns to match the model's training feature names
-# Unwrap the underlying XGB booster
-    try:
+    # Determine the XGBoost booster object
+    if hasattr(pipeline, 'get_booster'):
+        # Raw XGBClassifier or pipeline step
         booster = pipeline.get_booster()
-    except AttributeError:
-     # If wrapped in an sklearn Pipeline under key 'model'
-        if hasattr(pipeline, 'named_steps') and 'model' in pipeline.named_steps:
-            booster = pipeline.named_steps['model'].get_booster()
-        else:
-            booster = pipeline.get_booster()
+    elif hasattr(pipeline, 'named_steps') and 'model' in pipeline.named_steps:
+        # sklearn Pipeline with a 'model' step
+        booster = pipeline.named_steps['model'].get_booster()
+    else:
+        raise AttributeError("Cannot find XGBoost booster in the provided pipeline or model.")
 
     expected = booster.feature_names
     actual = list(X.columns)
@@ -133,7 +132,11 @@ def predict_with_pipeline(pipeline, X):
 
     # Now predict
     preds  = pipeline.predict(X)
-    probas = pipeline.predict_proba(X)
+    try:
+        probas = pipeline.predict_proba(X)
+    except AttributeError:
+        # Some classifiers may not support predict_proba
+        probas = None
     return preds, probas
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
