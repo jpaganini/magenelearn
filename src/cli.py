@@ -110,6 +110,9 @@ def train(output_dir, chisq, muvr, no_split,
     else:
         chisq_file = None
 
+    # Detect the “no feature‐selection” mode:
+    no_fs = not chisq and not muvr
+
     # Step 02: MUVR
     d2 = make_step_dir(base, 2, 'muvr_filtered')
     if muvr:
@@ -142,9 +145,15 @@ def train(output_dir, chisq, muvr, no_split,
                  '--output_dir', d3])
         feat_train = os.path.join(d3, f"{name}_train.tsv")
         feat_test = os.path.join(d3, f"{name}_test.tsv")
-    else:
-        click.echo("Error: pipeline requires --muvr", err=True)
+    elif chisq and not muvr:
+        click.echo("Error: cannot run Chi² without MUVR — use `--no_fs` for raw features", err=True)
         sys.exit(1)
+
+    else:
+        # neither chisq nor muvr: bypass feature‐selection entirely
+        # assume train_meta/test_meta already point to full‐feature TSVs
+        feat_train = os.path.abspath(train_meta).replace('_train.tsv', '_full_features.tsv')
+        feat_test = os.path.abspath(test_meta).replace('_test.tsv', '_full_features.tsv')
 
     # Step 04 & 05: Train + CV
     d4 = make_step_dir(base, 4, 'model')
@@ -154,7 +163,8 @@ def train(output_dir, chisq, muvr, no_split,
              '--features', os.path.abspath(feat_train),
              '--label', 'outcome', '--group_column', 'group',
              '--model', model, '--sampling', upsampling,
-             '--output_model', d4, '--output_cv', d5])
+             '--output_model', d4, '--output_cv', d5,
+             '--name', name])
     mdl = os.path.join(d4, f"{name}_{model}_{upsampling}.joblib")
 
     # Step 06: Splits evaluation
@@ -164,7 +174,8 @@ def train(output_dir, chisq, muvr, no_split,
              '--model', os.path.abspath(mdl),
              '--features', os.path.abspath(feat_test),
              '--label', 'outcome', '--group_column', 'group',
-             '--n_splits', str(n_splits), '--output_dir', d6])
+             '--n_splits', str(n_splits), '--output_dir', d6,
+             '--name', name])
 
     click.echo("\n✅ Training pipeline done.")
 
@@ -186,7 +197,8 @@ def test(output_dir, model_file, features, name, label, group_column):
              '--model', os.path.abspath(model_file),
              '--features', os.path.abspath(features),
              '--label', label, '--group_column', group_column,
-             '--no_cv', '--output_dir', d7])
+             '--no_cv', '--output_dir', d7,
+             '--name', name])
     click.echo("\n✅ Test pipeline done.")
 
 if __name__ == '__main__':
