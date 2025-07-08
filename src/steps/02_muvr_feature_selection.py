@@ -3,7 +3,7 @@ import sys
 import os
 import argparse
 import pandas as pd
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import LabelEncoder
 from py_muvr.feature_selector import FeatureSelector
 
 """
@@ -189,10 +189,7 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     y_series = model_input[target_col]
 
     if model=='XGBC':
-        encoder = OneHotEncoder(sparse=False)
-    # Reshape y to a 2D array as fit_transform expects a 2D array
-        y_encoded = encoder.fit_transform(y_series.values)
-        #y_encoded = encoder.fit_transform(np.array(y_muvr).reshape(-1, 1))
+        y_encoded = LabelEncoder().fit_transform(y_series)
         y_variable = y_encoded
     elif model=='RFC':
         y_variable = y_series.values.ravel()
@@ -222,7 +219,6 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     df_muvr_max = model_input[[outcome_col]+list(selected_features.max)]
 
     #Write features to a new file.
-    #output_path = os.path.join(output_dir, class_type)
     os.makedirs(output_dir, exist_ok=True)
     min_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_min.tsv')
     mid_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_mid.tsv')
