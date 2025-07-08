@@ -1,205 +1,591 @@
 #!/usr/bin/env python3
 """
-MageneLearn CLI (cli.py)
+MaGeneLearn CLI – command reference
+==================================
 
-A Click-based wrapper to orchestrate the MaGene ML pipeline steps 00–05, with organized outputs.
+A convenience front‑end that orchestrates the numbered **MaGeneLearn** pipeline
+scripts (`00` – `05`).  Two sub‑commands are exposed:
 
-Commands:
-  Train    Execute dataset split, Chi², MUVR, feature extraction, training, and CV evaluation.
-  Test     Run hold-out evaluation (no CV) on a trained model.
+* **train** – build a model end‑to‑end (data split → optional feature‑selection → model fit → evaluation)
+* **test**  – evaluate an existing model on an external feature matrix (no CV)
 
-Required inputs:
-  For Train mode:
-    --meta-file      Path to metadata TSV (required)
-    --features1      Path to first k-mer counts TSV (required)
-    --name           Base filename prefix (required)
-    --model          Model type: XGBC or RFC (required)
-    [--chisq]        Flag to run Chi² feature selection (optional)
-    [--muvr]         Flag to run MUVR feature selection (optional, requires --chisq)
-    [--no-split]     Skip dataset splitting if already done (optional)
-    [--features2]    Path to second k-mer counts TSV (optional)
-    [--upsampling]   Upsampling method: none, smote, random (default: none)
-    [--n-splits]     Number of CV folds (default: 5)
-    [--output-dir]   Base output directory (default: timestamped YYMMDD_HHMM)
+-------------------------------------------------------------------------------
+TRAIN MODE
+-------------------------------------------------------------------------------
 
-  For Test mode:
-    --model-file     Path to trained .joblib model (required)
-    --features       Path to features TSV (required)
-    --name           Base filename prefix for outputs (required)
-    [--label]        Label column name (default: outcome)
-    [--group-column] Group column name (default: group)
-    [--output-dir]   Base output directory (default: timestamped YYMMDD_HHMM)
+```
+magene-learn train [OPTIONS]
+```
 
-Usage examples:
-  maGeneLearn Train --meta-file meta.tsv --features1 kmers1.tsv --name exp --model RFC --chisq --muvr --upsampling smote --n-splits 10
-  maGeneLearn Test --model-file exp_RFC_smote.joblib --features exp_test.tsv --name exp_test
+### Required inputs
+| Option | File | Description |
+|--------|------|-------------|
+| `--meta-file` | `*.tsv` | Sample metadata with at least **`outcome`** (label) and **`group`** columns |
+| `--features1` | `*.tsv` | Primary k‑mer count matrix (samples × k‑mers) |
+| `--name`      | *string* | Prefix used to label every output artefact |
+| `--model`     | RFC \| XGBC | Choice of ML algorithm |
+
+### Optional inputs / switches
+| Option | Purpose |
+|--------|---------|
+| `--features2`            | Second k‑mer matrix merged with `--features1` |
+| `--features-train`       | Pre‑computed **training** feature table – bypasses Steps 00–03 |
+| `--features-test`        | Pre‑computed **test** feature table; if omitted, Step 07 is skipped |
+| `--chisq / --no-chisq`   | Run Chi² selection (Step 01) |
+| `--muvr / --no-muvr`     | Run MUVR selection (Step 02) – *requires* `--chisq` |
+| `--no-split`             | Skip Step 00; assumes existing `*_train.tsv` / `*_test.tsv` |
+| `--upsampling`           | `none` (default) \| `smote` \| `random` |
+| `--n-splits`             | Folds for cross‑validation (default **5**) |
+| `--output-dir`           | Base directory (default: timestamp, e.g. `250704_1532`) |
+| `--dry-run`              | Print planned shell commands but **do not execute** |
+
+### Outputs (directory tree)
+```
+<output>/
+├── 00_data_split/        *_train.tsv  *_test.tsv
+├── 01_chisq/             <name>_top100000_features.tsv
+├── 02_muvr/              <name>_muvr_<model>_min.tsv
+├── 03_final_features/    <name>_train.tsv  <name>_test.tsv
+├── 04_model/             <name>_<model>_<upsampling>.joblib
+├── 05_cv/                cross‑validation metrics
+├── 06_train_eval/        evaluation on training folds
+└── 07_test_eval/         evaluation on hold‑out set (only if `--features-test`)
+```
+
+### Usage examples
+```bash
+# Full workflow: split → Chi² → MUVR → train (RFC, 5‑fold CV)
+magene-learn train \
+    --meta-file meta.tsv \
+    --features1 kmers.tsv \
+    --name exp \
+    --model RFC \
+    --chisq --muvr --upsampling smote
+
+# Retrain using existing *_train/_test tables (no feature‑selection)
+magene-learn train \
+    --no-split \
+    --meta-file meta.tsv \
+    --features1 dummy.tsv \
+    --name exp --model XGBC
+
+# Feed final matrices directly; skip hold‑out evaluation
+magene-learn train \
+    --features-train final_train.tsv \
+    --meta-file meta.tsv \
+    --name exp --model RFC --n-splits 10
+```
+
+-------------------------------------------------------------------------------
+TEST MODE
+-------------------------------------------------------------------------------
+
+```
+magene-learn test --model-file <joblib> --features <tsv> --name <prefix> [OPTIONS]
+```
+
+### Required
+| Option | Description |
+|--------|-------------|
+| `--model-file` | `.joblib` produced by **train** |
+| `--features`   | Feature matrix to evaluate |
+| `--name`       | Prefix for output artefacts |
+
+### Optional
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--label`         | `outcome` | Column holding class labels |
+| `--group-column`  | `group`   | Column used for grouped metrics |
+| `--output-dir`    | timestamp | Base directory for outputs |
+
+### Outputs
+```
+<output>/07_test_eval/  metrics tables & plots (no CV)
+```
+
+### Example
+```bash
+magene-learn test \
+    --model-file 04_model/exp_RFC_none.joblib \
+    --features external_validation.tsv \
+    --name val
+```
+
+-------------------------------------------------------------------------------
+INSTALLATION
+-------------------------------------------------------------------------------
+Add this `console_scripts` entry to **pyproject.toml** so that `pip install -e .`
+or a normal build places a `magene-learn` executable on your `$PATH`:
+
+```toml
+[project.scripts]
+magene-learn = "magenelearn_cli:cli"
+```
 """
-import click
-import subprocess
+from __future__ import annotations
+
 import sys
-import os
-import glob
+import subprocess
+from dataclasses import dataclass, field
 from datetime import datetime
 from importlib import resources
+from pathlib import Path
+from typing import List, Sequence
 
-# Determine where the numbered scripts are installed
+import click
+
+# ---------------------------------------------------------------------------
+# Locate numbered scripts
+# ---------------------------------------------------------------------------
 try:
-    STEPS_DIR = resources.files('maGeneLearn.steps')
-except Exception:
-    # fallback for Python <3.9 or edit-in-place
-    STEPS_DIR = os.path.join(os.path.dirname(__file__), 'steps')
+    STEPS_DIR: Path = Path(resources.files("maGeneLearn.steps"))  # type: ignore[arg-type]
+except (AttributeError, ModuleNotFoundError):
+    STEPS_DIR = Path(__file__).resolve().parent / "steps"
+
+# ---------------------------------------------------------------------------
+# Context dataclass shared across steps
+# ---------------------------------------------------------------------------
+@dataclass
+class Context:
+    base_dir: Path
+    name: str
+    model: str  # "RFC" | "XGBC
+    muvr_model: str
+    upsample: str  # "none" | "smote" | "random"
+    n_splits: int
+    dry_run: bool = False
+    label: str = "outcome"
+    group_col: str = "group"
+    n_iter: int = 100
+    k: int = 100000
 
 
-def run_cmd(cmd, cwd=None):
-    """Run a command in subprocess, exiting on error."""
-    click.echo(f"\n>>> Running: {' '.join(cmd)} (cwd={cwd})")
-    res = subprocess.run(cmd, cwd=cwd)
-    if res.returncode:
+    # artefacts populated as we go
+    train_meta: Path | None = None
+    test_meta: Path | None = None
+    chisq_file: Path | None = None
+    muvr_file: Path | None = None
+    feat_train: Path | None = None
+    feat_test: Path | None = None
+    model_file: Path | None = None
+
+
+    # cache of numbered sub‑directories
+    _step_dirs: dict[int, Path] = field(default_factory=dict, init=False, repr=False)
+
+    def step_dir(self, idx: int, label: str) -> Path:
+        if idx not in self._step_dirs:
+            p = (self.base_dir / f"{idx:02d}_{label}").resolve()
+            p.mkdir(parents=True, exist_ok=True)
+            self._step_dirs[idx] = p
+        return self._step_dirs[idx]
+
+# ---------------------------------------------------------------------------
+# Helper to run external scripts
+# ---------------------------------------------------------------------------
+
+def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, dry: bool) -> None:
+    click.echo(f"\n>>> {' '.join(cmd)} (cwd={cwd})")
+    if dry:
+        return
+
+    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    log.write_text(res.stdout + res.stderr)
+    if res.returncode != 0:
+        click.echo(res.stderr, err=True)
+        click.echo(f"Step failed – see log {log}", err=True)
         sys.exit(res.returncode)
 
+# ---------------------------------------------------------------------------
+# Individual pipeline steps (still shelling out to 00–05 scripts)
+# ---------------------------------------------------------------------------
 
-def make_step_dir(base_dir, idx, name):
-    path = os.path.join(base_dir, f"{idx:02d}_{name}")
-    os.makedirs(path, exist_ok=True)
-    return path
+def split(ctx: Context, meta_file: Path) -> None:
+    d = ctx.step_dir(0, "data_split")
+    script = STEPS_DIR / "00_split_dataset.py"
+    run([
+        sys.executable, str(script),
+        "--meta-file", str(meta_file.resolve()), "--out-prefix", ctx.name
+    ], cwd=d, log=d / "split.log", dry=ctx.dry_run)
+    ctx.train_meta = d / f"{ctx.name}_train.tsv"
+    ctx.test_meta = d / f"{ctx.name}_test.tsv"
 
-@click.group()
-def cli():
-    """MaGeneLearn CLI entry point."""
-    pass
 
-@cli.command()
-@click.option('--output-dir', default=None,
-              help='Base output directory (default: timestamped YYMMDD_HHMM)')
-@click.option('--chisq', is_flag=True, help='Run Chi² selection (01)')
-@click.option('--muvr', is_flag=True, help='Run MUVR selection (02)')
-@click.option('--no-split', 'no_split', is_flag=True, help='Skip splitting (00)')
-@click.option('--meta-file', required=True, help='Metadata TSV')
-@click.option('--features1', required=True, help='K-mer counts TSV #1')
-@click.option('--features2', default=None, help='K-mer counts TSV #2 (opt)')
-@click.option('--name', required=True, help='Base filename prefix')
-@click.option('--model', type=click.Choice(['XGBC','RFC']), required=True)
-@click.option('--upsampling', type=click.Choice(['none','smote','random']), default='none')
-@click.option('--n-splits', default=5, help='CV folds for evaluation')
-def train(output_dir, chisq, muvr, no_split,
-          meta_file, features1, features2,
-          name, model, upsampling, n_splits):
-    """Run the full Train pipeline."""
-    base = output_dir or datetime.now().strftime('%y%m%d_%H%M')
-    os.makedirs(base, exist_ok=True)
-    click.echo(f"Using base output dir: {base}")
+def chisq(ctx: Context, features1: Path, features2: Path | None) -> None:
+    d = ctx.step_dir(1, "chisq")
+    script = STEPS_DIR / "01_chisq_selection.py"
+    cmd: List[str] = [sys.executable, str(script),
+                      "--meta", str(ctx.train_meta.resolve()),
+                      "--features1", str(features1.resolve()),
+                      "--output_dir", str(d.resolve()),
+                      "--k", str(ctx.k),
+                      "--name", ctx.name,
+                      "--label", ctx.label,  # pass custom column names
+                      ]
+    if features2:
+        cmd += ["--features2", str(features2.resolve())]
+    run(cmd, cwd=d, log=d / "chisq.log", dry=ctx.dry_run)
+    ctx.chisq_file = (d / f"{ctx.name}_top{ctx.k}_features.tsv").resolve()
 
-    # Step 00: Split
-    d0 = make_step_dir(base, 0, 'data_split')
-    if not no_split:
-        script = os.path.join(str(STEPS_DIR), '00_split_dataset.py')
-        run_cmd(['python', script, '--meta-file', os.path.abspath(meta_file), '--out-prefix', name], cwd=d0)
-    train_meta = os.path.join(d0, f"{name}_train.tsv")
-    test_meta = os.path.join(d0, f"{name}_test.tsv")
 
-    # Step 01: Chi²
-    d1 = make_step_dir(base, 1, 'chisq_filtered')
-    if chisq:
-        script = os.path.join(str(STEPS_DIR), '01_chisq_selection.py')
-        cmd = ['python', script, '--meta', os.path.abspath(train_meta),
-               '--features1', os.path.abspath(features1), '--output_dir', d1]
-        if features2:
-            cmd += ['--features2', os.path.abspath(features2)]
-        run_cmd(cmd)
-        chisq_file = os.path.join(d1, f"{name}_top100000_features.tsv")
-    else:
-        chisq_file = None
-
-    # Detect the “no feature‐selection” mode:
-    no_fs = not chisq and not muvr
-
-    # Step 02: MUVR
-    d2 = make_step_dir(base, 2, 'muvr_filtered')
-    if muvr:
-        if not chisq:
-            click.echo("Error: --muvr requires --chisq", err=True)
-            sys.exit(1)
-        script = os.path.join(str(STEPS_DIR), '02_muvr_feature_selection.py')
-        run_cmd(['python', script,
-                 '--train_data', os.path.abspath(train_meta),
-                 '--chisq_file', os.path.abspath(chisq_file),
-                 '--model', model, '--output', d2])
-        pat = os.path.join(d2, f"{name}_muvr_{model}_min.tsv")
-        files = glob.glob(pat)
-        if not files:
-            click.echo(f"Error: no muvr_min found in {d2}", err=True)
-            sys.exit(1)
-        muvr_file = files[0]
-    else:
-        muvr_file = None
-
-    # Step 03: Extract
-    d3 = make_step_dir(base, 3, 'final_features')
-    if muvr:
-        script = os.path.join(str(STEPS_DIR), '03_extract_features.py')
-        run_cmd(['python', script,
-                 '--muvr_file', os.path.abspath(muvr_file),
-                 '--chisq_file', os.path.abspath(chisq_file),
-                 '--train_metadata', os.path.abspath(train_meta),
-                 '--test_metadata', os.path.abspath(test_meta),
-                 '--output_dir', d3])
-        feat_train = os.path.join(d3, f"{name}_train.tsv")
-        feat_test = os.path.join(d3, f"{name}_test.tsv")
-    elif chisq and not muvr:
-        click.echo("Error: cannot run Chi² without MUVR — use `--no_fs` for raw features", err=True)
+def muvr(ctx: Context) -> None:
+    if not ctx.chisq_file:
+        click.echo("Error: --muvr requires Chi² step", err=True)
         sys.exit(1)
 
+    d = ctx.step_dir(2, "muvr")
+    script = STEPS_DIR / "02_muvr_feature_selection.py"
+
+    # tmp folder that holds the Chi²-filtered training matrix for MUVR
+    tmp_dir = (ctx.base_dir / "tmp_muvr_data").resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    run([
+        sys.executable, str(script),
+        "--train_data", str(ctx.train_meta.resolve()),
+        "--chisq_file", str(ctx.chisq_file.resolve()),
+        "--model", ctx.muvr_model,
+        "--output", str(d),
+        "--group_col", ctx.group_col,
+        "--outcome_col", ctx.label,
+        "--filtered_train_dir", str(tmp_dir),
+        "--output", str(d),
+        "--name", ctx.name
+    ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run)
+
+    matches = sorted(d.glob(f"{ctx.name}_muvr_{ctx.muvr_model}_min.tsv"))
+    if not matches:
+        click.echo("MUVR output not found", err=True)
+        sys.exit(1)
+    ctx.muvr_file = matches[0].resolve()
+
+
+def extract_features(ctx: Context) -> None:
+    """
+    Build the final feature matrices.
+
+    On the Chi² + MUVR branch it calls 03_extract_features.py, forwarding
+    the correct label/group names and *optionally* the test-metadata file.
+    """
+    # -------------------------------------------------------- short-circuit
+    if ctx.feat_train:          # user already supplied final matrices
+        return
+
+    d = ctx.step_dir(3, "final_features")
+    script = STEPS_DIR / "03_extract_features.py"
+
+    # -------------------------------------------------- Chi² + MUVR branch
+    if ctx.muvr_file:
+        cmd = [
+            sys.executable, str(script),
+            "--muvr_file",      str(ctx.muvr_file),
+            "--chisq_file",     str(ctx.chisq_file),
+            "--train_metadata", str(ctx.train_meta),
+            "--output_dir",     str(d),
+            "--group_column",   ctx.group_col,
+            "--label",          ctx.label,
+            "--name",           ctx.name,
+        ]
+
+        # only add --test_metadata when we actually have one
+        if ctx.test_meta:
+            cmd += ["--test_metadata", str(ctx.test_meta)]
+
+        run(cmd, cwd=d, log=d / "extract.log", dry=ctx.dry_run)
+
+        # store absolute paths for downstream steps
+        ctx.feat_train = (d / f"{ctx.name}_train.tsv").resolve()
+        if ctx.test_meta:
+            ctx.feat_test = (d / f"{ctx.name}_test.tsv").resolve()
+
+    # --------------------------------------------- Chi² without MUVR → error
+    elif ctx.chisq_file:
+        click.echo("Chi² without MUVR not supported in this pipeline.", err=True)
+        sys.exit(1)
+
+    # --------------------------------------- no feature-selection branch
     else:
-        # neither chisq nor muvr: bypass feature‐selection entirely
-        # assume train_meta/test_meta already point to full‐feature TSVs
-        feat_train = os.path.abspath(train_meta).replace('_train.tsv', '_full_features.tsv')
-        feat_test = os.path.abspath(test_meta).replace('_test.tsv', '_full_features.tsv')
+        ctx.feat_train = ctx.train_meta.with_name(
+            ctx.train_meta.name.replace("_train.tsv", "_full_features.tsv")
+        ).resolve()
 
-    # Step 04 & 05: Train + CV
-    d4 = make_step_dir(base, 4, 'model')
-    d5 = make_step_dir(base, 5, 'cv')
-    script = os.path.join(str(STEPS_DIR), '04_train_model.py')
-    run_cmd(['python', script,
-             '--features', os.path.abspath(feat_train),
-             '--label', 'outcome', '--group_column', 'group',
-             '--model', model, '--sampling', upsampling,
-             '--output_model', d4, '--output_cv', d5,
-             '--name', name])
-    mdl = os.path.join(d4, f"{name}_{model}_{upsampling}.joblib")
+        if ctx.test_meta and ctx.test_meta.exists():
+            ctx.feat_test = ctx.test_meta.with_name(
+                ctx.test_meta.name.replace("_test.tsv", "_full_features.tsv")
+            ).resolve()
 
-    # Step 06: Splits evaluation
-    d6 = make_step_dir(base, 6, 'splits_evaluation')
-    script = os.path.join(str(STEPS_DIR), '05_evaluate_model.py')
-    run_cmd(['python', script,
-             '--model', os.path.abspath(mdl),
-             '--features', os.path.abspath(feat_test),
-             '--label', 'outcome', '--group_column', 'group',
-             '--n_splits', str(n_splits), '--output_dir', d6,
-             '--name', name])
+def train_model(ctx: Context) -> None:
+    d_model = ctx.step_dir(4, "model")
+    d_cv = ctx.step_dir(5, "cv")
+    script = STEPS_DIR / "04_train_model.py"
+    run([
+        sys.executable, str(script),
+        "--features", str(ctx.feat_train),
+        "--model", ctx.model, "--sampling", ctx.upsample,
+        "--output_model", str(d_model),
+        "--output_cv", str(d_cv),
+        "--name", ctx.name,
+        "--label", ctx.label,
+        "--group_column", ctx.group_col,
+        "--n_iter", str(ctx.n_iter)
+    ], cwd=d_model, log=d_model / "train.log", dry=ctx.dry_run)
+    ctx.model_file = d_model / f"{ctx.name}_{ctx.model}_{ctx.upsample}.joblib"
 
-    click.echo("\n✅ Training pipeline done.")
+
+def evaluate_train(ctx: Context) -> None:
+    d = ctx.step_dir(6, "train_eval")
+    script = STEPS_DIR / "05_evaluate_model.py"
+    run([
+        sys.executable, str(script),
+        "--model", str(ctx.model_file),
+        "--features", str(ctx.feat_train),
+        "--n_splits", str(ctx.n_splits),
+        "--output_dir", str(d),
+        "--name", ctx.name + "_train",
+        "--label", ctx.label,
+        "--group_column", ctx.group_col
+    ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run)
+
+
+def evaluate_holdout(ctx: Context) -> None:
+    if not ctx.feat_test:
+        return  # nothing to do
+    d = ctx.step_dir(7, "test_eval")
+    script = STEPS_DIR / "05_evaluate_model.py"
+    run([
+        sys.executable, str(script),
+        "--model", str(ctx.model_file),
+        "--features", str(ctx.feat_test),
+        "--no_cv",
+        "--output_dir", str(d),
+        "--name", ctx.name + "_test",
+        "--label", ctx.label,
+        "--group_column", ctx.group_col
+    ], cwd=d, log=d / "eval_test.log", dry=ctx.dry_run)
+
+# ---------------------------------------------------------------------------
+# CLI setup
+# ---------------------------------------------------------------------------
+
+@click.group()
+@click.option("--dry-run", is_flag=True, help="Print commands without executing.")
+@click.pass_context
+def cli(ctx: click.Context, dry_run: bool) -> None:
+    ctx.obj = {"dry": dry_run}
+
+# -------------- Train command ----------------
 
 @cli.command()
-@click.option('--output-dir', default=None, help='Base output dir')
-@click.option('--model-file', required=True, help='Trained model .joblib')
-@click.option('--features', required=True, help='Features TSV')
-@click.option('--name', required=True, help='Base name prefix')
-@click.option('--label', default='outcome')
-@click.option('--group-column', default='group')
-def test(output_dir, model_file, features, name, label, group_column):
-    """Run hold-out evaluation (no CV)."""
-    base = output_dir or datetime.now().strftime('%y%m%d_%H%M')
-    os.makedirs(base, exist_ok=True)
-    click.echo(f"Using base output dir: {base}")
-    d7 = make_step_dir(base, 7, 'test_evaluation')
-    script = os.path.join(str(STEPS_DIR), '05_evaluate_model.py')
-    run_cmd(['python', script,
-             '--model', os.path.abspath(model_file),
-             '--features', os.path.abspath(features),
-             '--label', label, '--group_column', group_column,
-             '--no_cv', '--output_dir', d7,
-             '--name', name])
-    click.echo("\n✅ Test pipeline done.")
+@click.option("--meta-file", type=click.Path(exists=True, path_type=Path), required=False)
+@click.option("--train-meta", type=click.Path(exists=True, path_type=Path),
+              help="Pre-split training metadata TSV (implies --no-split)")
+@click.option("--test-meta",  type=click.Path(exists=True, path_type=Path),
+              help="Pre-split test metadata TSV (optional)")
+@click.option("--features1", type=click.Path(exists=True, path_type=Path), required=False)
+@click.option("--features2", type=click.Path(exists=True, path_type=Path))
+@click.option("--name", required=True)
+@click.option("--model", type=click.Choice(["XGBC", "RFC"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
+@click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
+@click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
+@click.option("--n-splits", "n_splits", default=5, show_default=True)
+@click.option("--output-dir", type=click.Path(path_type=Path))
+@click.option("--chisq/--no-chisq", "chisq_flag", default=False)
+@click.option("--muvr/--no-muvr", "muvr_flag", default=False)
+@click.option("--no-split", is_flag=True, help="Skip dataset split step")
+# New: allow direct feature matrices, bypassing feature-selection entirely
+@click.option("--features-train", type=click.Path(exists=True, path_type=Path))
+@click.option("--features-test", type=click.Path(exists=True, path_type=Path))
+@click.option("--label", default="outcome", show_default=True)
+@click.option("--group-column", "group_column", default="group", show_default=True)
+@click.option("--n-iter", "n_iter", type=int, default=100,
+              help="Number of iterations for RandomizedSearchCV")
+@click.option("--k", type=int, default=100000,
+              help="Number of top features to keep in the Chi² step")
+@click.option("--chisq-file", type=click.Path(exists=True, path_type=Path))
+@click.pass_context
 
-if __name__ == '__main__':
+def train(click_ctx: click.Context, *,
+          # metadata
+          meta_file:    Path | None,
+          train_meta:   Path | None,
+          test_meta:    Path | None,
+          no_split:     bool,
+          # features
+          features1:    Path | None,
+          features2:    Path | None,
+          features_train: Path | None,
+          features_test:  Path | None,
+          # modelling + FS flags
+          chisq_flag:   bool,
+          chisq_file:   Path | None,
+          muvr_flag:    bool,
+          k:            int,
+          # core settings
+          name:         str,
+          model:        str,
+          muvr_model:   str,   # fallback
+          upsampling:   str,
+          n_splits:     int,
+          n_iter:       int,
+          label:        str,
+          group_column: str,
+          output_dir:   Path | None) -> None:
+    """Train model end-to-end, with optional Chi² + MUVR feature selection."""
+
+    # ------------------------------------------------------------------ sanity
+    if bool(meta_file) == bool(train_meta):
+        raise click.UsageError(
+            "Supply EITHER --meta-file (unsplit) OR --train-meta (pre-split)."
+        )
+
+    if chisq_file and chisq_flag:
+        raise click.UsageError("--chisq and --chisq-file are mutually exclusive.")
+
+    if muvr_flag and not (chisq_flag or chisq_file):
+        raise click.UsageError("--muvr requires --chisq or --chisq-file.")
+
+    # ----------------------------------------------------------------- context
+    base = (output_dir or
+            Path(datetime.now().strftime("%y%m%d_%H%M"))).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    click.echo(f"Base output dir: {base}")
+
+    ctx = Context(
+        base_dir   = base,
+        name       = name,
+        model      = model,
+        upsample   = upsampling,
+        n_splits   = n_splits,
+        dry_run    = click_ctx.obj["dry"],
+        label      = label,
+        group_col  = group_column,
+        n_iter     = n_iter,
+        k          = k,
+        muvr_model=muvr_model or model  # fallback
+    )
+
+    # -------------------------------------------- ingest pre-existing artefacts
+    if chisq_file:
+        ctx.chisq_file = chisq_file.resolve()
+
+    if features_train:
+        ctx.feat_train = features_train.resolve()
+
+    if features_test:
+        ctx.feat_test = features_test.resolve()
+
+    if train_meta:
+        ctx.train_meta = train_meta.resolve()
+        no_split = True          # implicit
+    if test_meta:
+        ctx.test_meta  = test_meta.resolve()
+        no_split = True
+
+    # ------------------------------------------------------------------ plan
+    plan: List[tuple[bool, callable[[Context], None]]] = []
+
+    # ---------------- step 00 – split (only if we still need train_meta)
+    if ctx.train_meta is None and not features_train:
+        if no_split:
+            # derive legacy filenames (<name>_train.tsv) for back-compat
+            ctx.train_meta = meta_file.with_name(f"{name}_train.tsv").resolve()
+            ctx.test_meta  = meta_file.with_name(f"{name}_test.tsv").resolve()
+        else:
+            plan.append((True, lambda c: split(c, meta_file)))
+
+    # ---------------- step 01 – Chi²
+    if chisq_flag:
+        plan.append((True, lambda c: chisq(c, features1, features2)))
+
+    # ---------------- step 02 – MUVR
+    if muvr_flag:
+        plan.append((True, muvr))
+
+    # ---------------- downstream steps
+    plan.extend([
+        (True, extract_features),
+        (True, train_model),
+        (True, evaluate_train),
+        (ctx.feat_test is not None, evaluate_holdout),
+    ])
+
+    # ---------------------------------------------------------------- execute
+    for cond, func in plan:
+        if cond:
+            func(ctx)
+
+    click.echo("\n✅ Training pipeline complete.")
+
+
+
+
+# -------------- Test command -----------------
+
+@cli.command()
+@click.option("--model-file", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--features", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--name", required=True)
+@click.option("--label", default="outcome")
+@click.option("--group-column", default="group")
+@click.option("--output-dir", type=click.Path(path_type=Path))
+@click.option("--extract-features", is_flag=True, help="Generate the test feature table with 03_extract_features.py ")
+@click.option("--test-metadata",  type=click.Path(exists=True, path_type=Path), help="Metadata TSV for the external test set (required with --extract-features)")
+@click.option("--muvr-file",  type=click.Path(exists=True, path_type=Path), help="*_muvr_*_min.tsv file with selected features(required with --extract-features)")
+@click.pass_context
+def test(click_ctx: click.Context, *, model_file: Path, features: Path, name: str,
+             label: str, group_column: str, output_dir: Path | None, muvr_file, extract_features, test_metadata) -> None:
+
+    if extract_features:
+        missing = [flag for flag, val in
+                   [("--test-metadata", test_metadata),
+                    ("--muvr-file", muvr_file),
+                    ("--features", features)]  # features = Chi² file!
+                   if val is None]
+        if missing:
+            raise click.UsageError(
+                f"--extract-features requires {', '.join(missing)}")
+    else:
+        if features is None:
+            raise click.UsageError(
+                "Either supply --features or use --extract-features with all inputs.")
+
+    """Hold‑out evaluation only (no CV)."""
+    base = output_dir or Path(datetime.now().strftime("%y%m%d_%H%M"))
+    base.mkdir(parents=True, exist_ok=True)
+
+    ctx = Context(base,
+                  name,
+                  model="NA",
+                  muvr_model="NA",
+                  upsample="none",
+                  n_splits=0,
+                  dry_run=click_ctx.obj["dry"],
+                  label=label,
+                  group_col=group_column)
+    ctx.model_file = model_file.resolve()
+
+    if extract_features:
+        d = ctx.step_dir(3, "final_features")
+        script = STEPS_DIR / "03_extract_features.py"
+        run([
+            sys.executable, str(script),
+            "--muvr_file", str(muvr_file.resolve()),
+            "--chisq_file", str(features.resolve()),  # features == Chi² file
+            #"--train_metadata", str(test_metadata.resolve()),  # accepted by script
+            "--test_metadata", str(test_metadata.resolve()),
+            "--output_dir", str(d),
+            "--label", label,
+            "--group_column", group_column,
+            "--name", name
+        ], cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
+
+        ctx.feat_test = (d / f"{name}_test.tsv").resolve()
+    else:
+        ctx.feat_test = features.resolve()
+
+    evaluate_holdout(ctx)
+    click.echo("\n✅ Test evaluation complete.")
+
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
     cli()
