@@ -53,9 +53,9 @@ def parse_arguments():
                         help='Path to MUVR-selected feature file (e.g. *_muvr_RFC_min.tsv)')
     parser.add_argument('--chisq_file', type=str, required=True,
                         help='Path to full feature matrix (e.g. full_chisq_matrix.tsv)')
-    parser.add_argument('--train_metadata', type=str, required=True,
+    parser.add_argument('--train_metadata', type=str, required=False,
                         help='Path to metadata TSV for training split')
-    parser.add_argument('--test_metadata', type=str, required=True,
+    parser.add_argument('--test_metadata', type=str, required=False,
                         help='Path to metadata TSV for testing split')
     parser.add_argument('--label', type=str, required=True,
                         help='Name of the label column to include in output')
@@ -99,7 +99,6 @@ def load_split_metadata(meta_path, label_col, group_col):
 
 def extract_features(chisq_file, selected_features):
     """Extract selected features from full chisq matrix."""
-    #usecols = ['Unnamed: 0'] + selected_features  # 'Unnamed: 0' ensures the index column is loaded
     df_full = pd.read_csv(chisq_file, sep='\t', index_col=0)
     df = df_full[selected_features]
     return df
@@ -123,33 +122,47 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
 def main():
     args = parse_arguments()
 
+    if not (args.train_metadata or args.test_metadata):
+        sys.exit(
+            "ERROR: You must supply either --train_metadata, --test_metadata, "
+            "or both.  Nothing to extract otherwise."
+        )
+
     print(f"Loading selected features from {args.muvr_file}")
     features = load_selected(args.muvr_file, args.label)
 
-    # Process train and test splits
-    print("Processing train split...")
-    process_split(
-        args.train_metadata,
-        args.chisq_file,
-        features,
-        args.label,
-        args.group_column,
-        args.output_dir,
-        suffix="train",
-        base_name=args.name
-    )
 
-    print("Processing test split...")
-    process_split(
-        args.test_metadata,
-        args.chisq_file,
-        features,
-        args.label,
-        args.group_column,
-        args.output_dir,
-        suffix="test",
-        base_name=args.name
-    )
+    # Process train or/and test splits
+    if args.train_metadata:
+        print("Processing train split...")
+        process_split(
+            args.train_metadata,
+            args.chisq_file,
+            features,
+            args.label,
+            args.group_column,
+            args.output_dir,
+            suffix="train",
+            base_name=args.name
+        )
+    else:
+        print("No train_metadata given – skipping train feature table construction.")
+
+    if args.test_metadata:
+        print("Processing test split...")
+        process_split(
+            args.test_metadata,
+            args.chisq_file,
+            features,
+            args.label,
+            args.group_column,
+            args.output_dir,
+            suffix="test",
+            base_name=args.name
+        )
+    else:
+        print("No test_metadata given – skipping hold-out feature table.")
+
 
     print("Done.")
 
