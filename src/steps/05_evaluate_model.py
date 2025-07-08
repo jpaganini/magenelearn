@@ -70,6 +70,8 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.utils import compute_sample_weight
 from sklearn.preprocessing import LabelEncoder
 
+import xgboost as xgb
+
 # ─────────────────────────────── global consts ───────────────────────────────
 RSEED = 50
 plt.rcParams.update({"figure.autolayout": True})
@@ -101,44 +103,43 @@ def get_cv_iterator(y: np.ndarray, groups: np.ndarray, n_splits):
     sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=RSEED)
     return list(sgkf.split(np.zeros_like(y), y, groups))
 
-
 def predict_with_pipeline(pipeline, X):
     """
-    Make predictions and probabilities using the trained pipeline or raw XGB model,
-    aligning feature columns to the model's expected order.
+    Return (pred_labels, pred_probabilities or None).
+
+    • Aligns column order for XGBoost.
+    • Works with any scikit-learn classifier that implements predict_proba().
     """
-    # Determine the XGBoost booster object
-    if hasattr(pipeline, 'get_booster'):
-        # Raw XGBClassifier or pipeline step
-        booster = pipeline.get_booster()
-    elif hasattr(pipeline, 'named_steps') and 'model' in pipeline.named_steps:
-        # sklearn Pipeline with a 'model' step
-        booster = pipeline.named_steps['model'].get_booster()
+    model = pipeline.named_steps.get("model", pipeline)
+
+    # ---------- XGBoost branch -------------------------------------------
+    if hasattr(model, "get_booster"):
+        booster = model.get_booster()
+        expected = booster.feature_names
+
+        missing = set(expected) - set(X.columns)
+        if missing:
+            raise ValueError(f"Missing features for prediction: {missing}")
+
+        extra = set(X.columns) - set(expected)
+        if extra:
+            X = X.drop(columns=list(extra))
+
+        X = X[expected]
+
+        preds  = pipeline.predict(X)
+        probas = pipeline.predict_proba(X)          # keep full matrix
+        return preds, probas
+
+    # ---------- Generic sklearn branch -----------------------------------
+    preds = pipeline.predict(X)
+
+    if hasattr(pipeline, "predict_proba"):
+        probas = pipeline.predict_proba(X)          # full matrix
     else:
-        raise AttributeError("Cannot find XGBoost booster in the provided pipeline or model.")
-
-    expected = booster.feature_names
-    actual = list(X.columns)
-
-    missing = set(expected) - set(actual)
-    extra   = set(actual)   - set(expected)
-    if missing:
-        raise ValueError(f"Missing features for prediction: {missing}")
-    if extra:
-        # Drop any extra columns not used in the model
-        X = X.drop(columns=list(extra))
-    # Reorder columns to exactly match expected
-    X = X[expected]
-
-    # Now predict
-    preds  = pipeline.predict(X)
-    try:
-        probas = pipeline.predict_proba(X)
-    except AttributeError:
-        # Some classifiers may not support predict_proba
         probas = None
-    return preds, probas
 
+    return preds, probas
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │                          core evaluation loop                           │
 # ╰──────────────────────────────────────────────────────────────────────────╯
@@ -192,7 +193,14 @@ def run_evaluation(
         oof_proba.append(
             pd.DataFrame(probas, index=X.index, columns=class_names)
         )
-        model_step = pipeline.named_steps.get('model', pipeline)
+        #model_step = pipeline.named_steps.get('model', pipeline)
+        if hasattr(pipeline, 'named_steps'):
+            # sklearn Pipeline – get the 'model' step or fall back
+            model_step = pipeline.named_steps.get('model', pipeline)
+        else:
+            # Raw classifier instance
+            model_step = pipeline
+
         if hasattr(model_step, 'feature_importances_'):
             feature_imps.append(
                 pd.Series(model_step.feature_importances_, index=X.columns)
@@ -213,21 +221,29 @@ def run_evaluation(
             # clone keeps original hyper‑params but clears fitted state
             clf = clone(pipeline)
 
+            # detect if pipeline has named steps (oversampler/model) or raw estimator
+            named = hasattr(clf, 'named_steps')
+            uses_oversampler = named and 'oversampler' in clf.named_steps
+            if named:
+                model_step = clf.named_steps.get('model', clf)
+            else:
+                model_step = clf
+            is_xgb = model_step.__class__.__name__.startswith('XGB')
+
             # balanced sample‑weights for XGBoost when *no* oversampling step exists
-            uses_oversampler = "oversampler" in clf.named_steps
-            is_xgb = clf.named_steps.get("model").__class__.__name__.startswith("XGB")
             fit_kwargs = {}
             if is_xgb and not uses_oversampler:
-                fit_kwargs["model__sample_weight"] = compute_sample_weight("balanced", y_tr)
+                key = 'model__sample_weight' if named else 'sample_weight'
+                fit_kwargs[key] = compute_sample_weight('balanced', y_tr)
 
             clf.fit(X_tr, y_tr, **fit_kwargs)
 
-            preds = clf.predict(X_te)
-            probas = clf.predict_proba(X_te)
+            preds, probas = predict_with_pipeline(clf, X_te)
 
             oof_true.append(y_te)
             oof_pred.append(preds)
             oof_proba.append(pd.DataFrame(probas, index=X_te.index, columns=class_names))
+
 
             # feature importances
             model_step = clf.named_steps.get("model", clf)
