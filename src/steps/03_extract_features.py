@@ -69,6 +69,80 @@ def parse_arguments():
     return parser.parse_args()
 
 
+
+#helper functions
+def _header_columns(path: Path) -> list[str]:
+    """Read only the first line to get the complete header."""
+    with path.open() as fh:
+        return fh.readline().rstrip("\n").split("\t")
+
+# def extract_selected_columns(chisq_path: Path,
+#                              selected_cols: list[str]) -> pd.DataFrame:
+#     """Load only the required columns from the full matrix."""
+#     header = _header_columns(chisq_path)          # list of str
+#     #id_col = header[0]                            # first column name
+#
+#     #usecols = [id_col] + [c for c in selected_cols if c in header]
+#     cleaned = [c.strip() for c in selected_cols if c.strip()]
+#     usecols = [c for c in cleaned if c in header]
+#
+# if len(usecols) == 1:       # nothing matched except the index col
+#         raise SystemExit("None of the selected features were found in "
+#                          f"{chisq_path.name}")
+#
+#     return pd.read_csv(
+#         chisq_path,
+#         sep="\t",
+#         index_col=0,            # still 0 because we kept the first column
+#         usecols=usecols,        # all strings → pandas is happy
+#         dtype="int8",
+#         memory_map=True
+#     )
+
+def extract_selected_columns(chisq_path: Path,
+                             selected_cols: list[str]) -> pd.DataFrame:
+    """
+    Load only the selected k-mer columns and keep sample IDs as the index,
+    even when the first header cell is blank.
+    """
+    header = _header_columns(chisq_path)          # list[str]
+    pos_usecols = [0]                             # always keep column 0
+
+    # map k-mer names → their integer positions
+    name_to_pos = {c: i for i, c in enumerate(header)}
+    missing = []
+
+    for col in (c.strip() for c in selected_cols if c.strip()):
+        if col in name_to_pos:
+            pos_usecols.append(name_to_pos[col])
+        else:
+            missing.append(col)
+
+    if len(pos_usecols) == 1:                     # only the ID column kept
+        raise SystemExit("None of the selected features are present in "
+                         f"{chisq_path.name}")
+
+    if missing:
+        print(f"[WARN] {len(missing)} selected features "
+              f"not found in full matrix (showing first 5): {missing[:5]}")
+
+    # ── read: homogeneous int list → pandas is happy
+    df = pd.read_csv(
+            chisq_path,
+            sep="\t",
+            usecols=pos_usecols,      # positions only
+            header=0,                 # keep header row
+            memory_map=True,
+    )
+
+    # column 0 is still present; make it the index
+    df.set_index(df.columns[0], inplace=True)
+
+    # 3️⃣  convert only the k-mer columns
+    df.iloc[:, :] = df.iloc[:, :].astype("int8")
+
+    return df
+
 def load_selected(muvr_path, label_col):
     """
         Load the MUVR file, extract selected feature names and labels.
@@ -91,17 +165,22 @@ def load_split_metadata(meta_path, label_col, group_col):
         groups: pd.Series of group IDs indexed by sample ID
     """
     meta = pd.read_csv(meta_path, sep='\t', index_col=0)
+    dupes = meta.index[meta.index.duplicated()]
+    print(len(dupes), "duplicate sample IDs:", dupes[:10])
     missing = [col for col in (label_col, group_col) if col not in meta.columns]
     if missing:
         raise SystemExit(f"Error: columns {missing} not found in metadata file {meta_path}")
     return meta[label_col], meta[group_col]
 
+def extract_features(chisq_file: str, selected_features: list[str]) -> pd.DataFrame:
+    """Wrapper that calls the efficient column loader."""
+    return extract_selected_columns(Path(chisq_file), selected_features)
 
-def extract_features(chisq_file, selected_features):
-    """Extract selected features from full chisq matrix."""
-    df_full = pd.read_csv(chisq_file, sep='\t', index_col=0)
-    df = df_full[selected_features]
-    return df
+# def extract_features(chisq_file, selected_features):
+#     """Extract selected features from full chisq matrix."""
+#     df_full = pd.read_csv(chisq_file, sep='\t', index_col=0)
+#     df = df_full[selected_features]
+#     return df
 
 
 def process_split(meta_path, chisq_file, features, label_col, group_col, output_dir, suffix, base_name):
