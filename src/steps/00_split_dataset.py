@@ -154,9 +154,8 @@ def split_by_lineage(
         clusters = group_df[group_col].values
 
         lineage_rng = random.Random(seed)
-        train_idx, test_idx = lineage_rng.choice(splits)
         splits = list(skf.split(group_df, labels, groups=clusters))
-        train_idx, test_idx = rng.choice(splits)
+        train_idx, test_idx = lineage_rng.choice(splits)
 
         train_parts.append(group_df.iloc[train_idx])
         test_parts.append(group_df.iloc[test_idx])
