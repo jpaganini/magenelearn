@@ -21,14 +21,14 @@ magene-learn train [OPTIONS]
 | Option | File | Description |
 |--------|------|-------------|
 | `--meta-file` | `*.tsv` | Sample metadata with at least **`outcome`** (label) and **`group`** columns |
-| `--features1` | `*.tsv` | Primary k‑mer count matrix (samples × k‑mers) |
+| `--features` | `*.tsv` | Primary k‑mer count matrix (samples × k‑mers) |
 | `--name`      | *string* | Prefix used to label every output artefact |
 | `--model`     | RFC \| XGBC | Choice of ML algorithm |
 
 ### Optional inputs / switches
 | Option | Purpose |
 |--------|---------|
-| `--features2`            | Second k‑mer matrix merged with `--features1` |
+| `--features2`            | Second k‑mer matrix merged with `--features` |
 | `--features-train`       | Pre‑computed **training** feature table – bypasses Steps 00–03 |
 | `--features-test`        | Pre‑computed **test** feature table; if omitted, Step 07 is skipped |
 | `--chisq / --no-chisq`   | Run Chi² selection (Step 01) |
@@ -57,7 +57,7 @@ magene-learn train [OPTIONS]
 # Full workflow: split → Chi² → MUVR → train (RFC, 5‑fold CV)
 magene-learn train \
     --meta-file meta.tsv \
-    --features1 kmers.tsv \
+    --features kmers.tsv \
     --name exp \
     --model RFC \
     --chisq --muvr --upsampling smote
@@ -66,7 +66,7 @@ magene-learn train \
 magene-learn train \
     --no-split \
     --meta-file meta.tsv \
-    --features1 dummy.tsv \
+    --features dummy.tsv \
     --name exp --model XGBC
 
 # Feed final matrices directly; skip hold‑out evaluation
@@ -158,6 +158,7 @@ class Context:
     group_col: str = "group"
     n_iter: int = 100
     k: int = 100000
+    lineage_col: str = "LINEAGE"
 
 
     # artefacts populated as we go
@@ -168,6 +169,7 @@ class Context:
     feat_train: Path | None = None
     feat_test: Path | None = None
     model_file: Path | None = None
+    full_matrix: Path | None = None
 
 
     # cache of numbered sub‑directories
@@ -205,18 +207,24 @@ def split(ctx: Context, meta_file: Path) -> None:
     script = STEPS_DIR / "00_split_dataset.py"
     run([
         sys.executable, str(script),
-        "--meta-file", str(meta_file.resolve()), "--out-prefix", ctx.name
+        "--meta-file", str(meta_file.resolve()),
+        "--name", ctx.name,
+        "--out-dir", str(d),
+        "--lineage-col", ctx.lineage_col,
+        "--group-col", ctx.group_col,  # optional but keeps column names consistent
+        "--outcome-col", ctx.label,  # optional
+        "--n-splits", str(ctx.n_splits)  # optional – matches CLI default
     ], cwd=d, log=d / "split.log", dry=ctx.dry_run)
     ctx.train_meta = d / f"{ctx.name}_train.tsv"
     ctx.test_meta = d / f"{ctx.name}_test.tsv"
 
 
-def chisq(ctx: Context, features1: Path, features2: Path | None) -> None:
+def chisq(ctx: Context, features: Path, features2: Path | None) -> None:
     d = ctx.step_dir(1, "chisq")
     script = STEPS_DIR / "01_chisq_selection.py"
     cmd: List[str] = [sys.executable, str(script),
                       "--meta", str(ctx.train_meta.resolve()),
-                      "--features1", str(features1.resolve()),
+                      "--features1", str(features.resolve()),
                       "--output_dir", str(d.resolve()),
                       "--k", str(ctx.k),
                       "--name", ctx.name,
@@ -249,7 +257,6 @@ def muvr(ctx: Context) -> None:
         "--group_col", ctx.group_col,
         "--outcome_col", ctx.label,
         "--filtered_train_dir", str(tmp_dir),
-        "--output", str(d),
         "--name", ctx.name
     ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run)
 
@@ -279,7 +286,7 @@ def extract_features(ctx: Context) -> None:
         cmd = [
             sys.executable, str(script),
             "--muvr_file",      str(ctx.muvr_file),
-            "--chisq_file",     str(ctx.chisq_file),
+            "--chisq_file",     str(ctx.full_matrix),
             "--train_metadata", str(ctx.train_meta),
             "--output_dir",     str(d),
             "--group_column",   ctx.group_col,
@@ -381,7 +388,8 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
               help="Pre-split training metadata TSV (implies --no-split)")
 @click.option("--test-meta",  type=click.Path(exists=True, path_type=Path),
               help="Pre-split test metadata TSV (optional)")
-@click.option("--features1", type=click.Path(exists=True, path_type=Path), required=False)
+@click.option("--lineage-col", default="LINEAGE", help="Column holding lineage/clade assignments (used only by step 00 when the split is executed).")
+@click.option("--features", type=click.Path(exists=True, path_type=Path), required=False)
 @click.option("--features2", type=click.Path(exists=True, path_type=Path))
 @click.option("--name", required=True)
 @click.option("--model", type=click.Choice(["XGBC", "RFC"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
@@ -392,7 +400,6 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--chisq/--no-chisq", "chisq_flag", default=False)
 @click.option("--muvr/--no-muvr", "muvr_flag", default=False)
 @click.option("--no-split", is_flag=True, help="Skip dataset split step")
-# New: allow direct feature matrices, bypassing feature-selection entirely
 @click.option("--features-train", type=click.Path(exists=True, path_type=Path))
 @click.option("--features-test", type=click.Path(exists=True, path_type=Path))
 @click.option("--label", default="outcome", show_default=True)
@@ -410,8 +417,10 @@ def train(click_ctx: click.Context, *,
           train_meta:   Path | None,
           test_meta:    Path | None,
           no_split:     bool,
+          #split
+          lineage_col: str,
           # features
-          features1:    Path | None,
+          features:    Path | None,
           features2:    Path | None,
           features_train: Path | None,
           features_test:  Path | None,
@@ -444,6 +453,14 @@ def train(click_ctx: click.Context, *,
     if muvr_flag and not (chisq_flag or chisq_file):
         raise click.UsageError("--muvr requires --chisq or --chisq-file.")
 
+    if muvr_flag and features is None:
+        raise click.UsageError(
+            "--muvr also needs the *full* feature matrix via --features "
+            "so that Step 03 can extract the selected k-mers."
+        )
+
+
+
     # ----------------------------------------------------------------- context
     base = (output_dir or
             Path(datetime.now().strftime("%y%m%d_%H%M"))).resolve()
@@ -461,7 +478,8 @@ def train(click_ctx: click.Context, *,
         group_col  = group_column,
         n_iter     = n_iter,
         k          = k,
-        muvr_model=muvr_model or model  # fallback
+        muvr_model=muvr_model or model, # fallback
+        lineage_col = lineage_col,
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
@@ -481,6 +499,15 @@ def train(click_ctx: click.Context, *,
         ctx.test_meta  = test_meta.resolve()
         no_split = True
 
+    if features:
+        ctx.full_matrix = features.resolve()
+
+    if muvr_flag and ctx.full_matrix is None:
+        raise click.UsageError(
+            "--muvr needs the ORIGINAL k-mer matrix via --features "
+            "(even if you hand in --features-train)."
+        )
+
     # ------------------------------------------------------------------ plan
     plan: List[tuple[bool, callable[[Context], None]]] = []
 
@@ -495,7 +522,7 @@ def train(click_ctx: click.Context, *,
 
     # ---------------- step 01 – Chi²
     if chisq_flag:
-        plan.append((True, lambda c: chisq(c, features1, features2)))
+        plan.append((True, lambda c: chisq(c, features, features2)))
 
     # ---------------- step 02 – MUVR
     if muvr_flag:
@@ -523,40 +550,48 @@ def train(click_ctx: click.Context, *,
 
 @cli.command()
 @click.option("--model-file", type=click.Path(exists=True, path_type=Path), required=True)
-@click.option("--features", type=click.Path(exists=True, path_type=Path), required=True)
+@click.option("--features-test", "ready_features",type=click.Path(exists=True, path_type=Path),required=False,help="Pre-filtered test feature table; evaluated as-is.",)
 @click.option("--name", required=True)
 @click.option("--label", default="outcome")
 @click.option("--group-column", default="group")
 @click.option("--output-dir", type=click.Path(path_type=Path))
-@click.option("--extract-features", is_flag=True, help="Generate the test feature table with 03_extract_features.py ")
+#extract features
+@click.option("--features","full_features",type=click.Path(exists=True, path_type=Path),required=False,help="Full k-mer count matrix (will be filtered by --muvr-file).")
 @click.option("--test-metadata",  type=click.Path(exists=True, path_type=Path), help="Metadata TSV for the external test set (required with --extract-features)")
 @click.option("--muvr-file",  type=click.Path(exists=True, path_type=Path), help="*_muvr_*_min.tsv file with selected features(required with --extract-features)")
 @click.pass_context
-def test(click_ctx: click.Context, *, model_file: Path, features: Path, name: str,
-             label: str, group_column: str, output_dir: Path | None, muvr_file, extract_features, test_metadata) -> None:
+def test(click_ctx: click.Context, *,
+         model_file: Path,
+         full_features:  Path | None,
+         ready_features: Path | None,
+         name: str,
+         label: str,
+         group_column: str,
+         output_dir: Path | None,
+         muvr_file: Path | None,
+         test_metadata : Path | None) -> None:
 
-    if extract_features:
-        missing = [flag for flag, val in
-                   [("--test-metadata", test_metadata),
-                    ("--muvr-file", muvr_file),
-                    ("--features", features)]  # features = Chi² file!
-                   if val is None]
-        if missing:
-            raise click.UsageError(
-                f"--extract-features requires {', '.join(missing)}")
-    else:
-        if features is None:
-            raise click.UsageError(
-                "Either supply --features or use --extract-features with all inputs.")
+    #1. Sanity check
+    if (full_features is None) == (ready_features is None):
+        # Either both missing OR both given – both invalid
+        raise click.UsageError(
+            "Supply exactly one of --features (full matrix) "
+            "or --features-test (ready feature table)."
+        )
 
-    """Hold‑out evaluation only (no CV)."""
+    if full_features and not (muvr_file and test_metadata):
+        raise click.UsageError(
+            "--features also needs --muvr-file and --test-metadata."
+        )
+
+    #2 - Basic context
     base = output_dir or Path(datetime.now().strftime("%y%m%d_%H%M"))
     base.mkdir(parents=True, exist_ok=True)
 
     ctx = Context(base,
                   name,
                   model="NA",
-                  muvr_model="NA",
+                  muvr_model="None",
                   upsample="none",
                   n_splits=0,
                   dry_run=click_ctx.obj["dry"],
@@ -564,25 +599,33 @@ def test(click_ctx: click.Context, *, model_file: Path, features: Path, name: st
                   group_col=group_column)
     ctx.model_file = model_file.resolve()
 
-    if extract_features:
+    # ── 3. branch A – build table from full matrix ─────────────────────────
+    #ctx.full_matrix = features.resolve()
+
+    if full_features:
+        ctx.full_matrix = full_features.resolve()
+
         d = ctx.step_dir(3, "final_features")
         script = STEPS_DIR / "03_extract_features.py"
         run([
             sys.executable, str(script),
             "--muvr_file", str(muvr_file.resolve()),
-            "--chisq_file", str(features.resolve()),  # features == Chi² file
-            #"--train_metadata", str(test_metadata.resolve()),  # accepted by script
+            "--chisq_file", str(ctx.full_matrix),
             "--test_metadata", str(test_metadata.resolve()),
             "--output_dir", str(d),
             "--label", label,
             "--group_column", group_column,
             "--name", name
-        ], cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
+        ], cwd=d, log=d / "extract_test.log",
+            dry=ctx.dry_run)
 
         ctx.feat_test = (d / f"{name}_test.tsv").resolve()
-    else:
-        ctx.feat_test = features.resolve()
 
+        # ── 4. branch B – ready table supplied ---------------------------------
+    else:
+        ctx.feat_test = ready_features.resolve()
+
+        # ── 5. evaluate --------------------------------------------------------
     evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")
 
