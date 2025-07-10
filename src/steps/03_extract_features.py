@@ -76,28 +76,6 @@ def _header_columns(path: Path) -> list[str]:
     with path.open() as fh:
         return fh.readline().rstrip("\n").split("\t")
 
-# def extract_selected_columns(chisq_path: Path,
-#                              selected_cols: list[str]) -> pd.DataFrame:
-#     """Load only the required columns from the full matrix."""
-#     header = _header_columns(chisq_path)          # list of str
-#     #id_col = header[0]                            # first column name
-#
-#     #usecols = [id_col] + [c for c in selected_cols if c in header]
-#     cleaned = [c.strip() for c in selected_cols if c.strip()]
-#     usecols = [c for c in cleaned if c in header]
-#
-# if len(usecols) == 1:       # nothing matched except the index col
-#         raise SystemExit("None of the selected features were found in "
-#                          f"{chisq_path.name}")
-#
-#     return pd.read_csv(
-#         chisq_path,
-#         sep="\t",
-#         index_col=0,            # still 0 because we kept the first column
-#         usecols=usecols,        # all strings → pandas is happy
-#         dtype="int8",
-#         memory_map=True
-#     )
 
 def extract_selected_columns(chisq_path: Path,
                              selected_cols: list[str]) -> pd.DataFrame:
@@ -151,11 +129,12 @@ def load_selected(muvr_path, label_col):
             labels: pd.Series indexed by sample ID
         """
     df = pd.read_csv(muvr_path, sep='\t', index_col=0)
-    if label_col not in df.columns:
-        raise SystemExit(f"Error: label '{label_col}' not found in MUVR file")
-    # all other columns are selected features
-    features = [c for c in df.columns if c != label_col]
-    return features
+    if label_col in df.columns:
+        # all other columns are selected features
+        features = [c for c in df.columns if c != label_col]
+        return features
+
+    return list(df.columns)
 
 def load_split_metadata(meta_path, label_col, group_col):
     """
