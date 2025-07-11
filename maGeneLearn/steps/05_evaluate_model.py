@@ -302,18 +302,6 @@ def run_evaluation(
             else np.concatenate(shap_vals_all, axis=0)
     )
 
-    # shap_stack = None
-    # if shap_vals_all:
-    #     if isinstance(shap_vals_all[0], list):
-    #         # Multiclass: build one 2-D array per class by concatenating that
-    #         # class’s slice across all folds
-    #         shap_stack = [
-    #             np.concatenate([fold_shap[c] for fold_shap in shap_vals_all], axis=0)
-    #             for c in range(len(class_names))
-    #         ]
-    #     else:
-    #         # Binary or single‐array case: just vstack
-    #         shap_stack = np.concatenate(shap_vals_all, axis=0)
 
     # 5️⃣  Write artefacts ------------------------------------------------------
         # Prepare files dict for downstream references
@@ -352,16 +340,6 @@ def run_evaluation(
                 df_shap = pd.DataFrame(shap_stack, index=proba_df.index, columns=X.columns)
                 df_shap.to_csv(output_dir / f"{name}_{cls}_shap_values.tsv", sep="\t")
 
-    # if shap_stack is not None:
-    #     # For binary, save the single array
-    #     if not isinstance(shap_stack, list):
-    #         np.save(files["shap_values"], shap_stack)
-    #
-    #     # In all cases, save per‐class TSVs
-    #     for idx, cls in enumerate(class_names):
-    #         arr = shap_stack[idx] if isinstance(shap_stack, list) else shap_stack
-    #         df_shap = pd.DataFrame(arr, index=proba_df.index, columns=X.columns)
-    #         df_shap.to_csv(output_dir / f"{name}_{cls}_shap_values.tsv", sep="\t")
 
     # 6️⃣  Diagnostic plots -----------------------------------------------------
     # confusion matrix heat‑map
