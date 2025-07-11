@@ -352,14 +352,15 @@ def run_evaluation(
 
     # SHAP summary beeswarm
     if shap_stack is not None:
-        shap.summary_plot(
-            shap_stack if problem_type == "binary" else shap_stack[0],
-            X.loc[proba_df.index],
-            feature_names=X.columns,
-            show=False,
-        )
-        plt.savefig(output_dir / f"{name}_shap_summary.png", dpi=300)
-        plt.close()
+        for idx, cls in enumerate(class_names):
+            shap.summary_plot(
+                shap_stack[idx],  # SHAP values for this class
+                X.loc[proba_df.index],
+                feature_names=X.columns,
+                show=False,
+            )
+            plt.savefig(output_dir / f"{name}_shap_summary_{cls}.png", dpi=300)
+            plt.close()
 
     logging.info("All outputs written to %s", output_dir)
 
