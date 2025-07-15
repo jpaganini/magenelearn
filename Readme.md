@@ -1,4 +1,4 @@
-# MaGeneLearn  – k-mer based bacterial genomics ML pipeline
+# MaGeneLearn  – Bacterial genomics ML pipeline
 MaGeneLearn is a modular CLI that chains together a set of numbered Python
 scripts (`00_split_dataset.py → 05_evaluate_model.py`) to train and evaluate
 machine-learning models from (potentially huge) k-mer count tables.
