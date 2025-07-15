@@ -167,11 +167,13 @@ def run_evaluation(
     logging.info("Loading model ➜ %s", model_path)
     pipeline = joblib.load(model_path)  # imblearn.Pipeline or estimator
 
+    logging.info("Reading feature matrix ➜ %s", features_tsv)
+    df = pd.read_csv(features_tsv, sep="\t", index_col=0)
+
     if predict_only:
         logging.info("Prediction-only mode enabled. Skipping evaluation.")
-        X = df.drop(columns=[label_col, group_col])
-        model = joblib.load(model_path)
-        preds = model.predict(X)
+        X = df.copy()
+        preds = pipeline.predict(X)
         pred_df = pd.DataFrame({
             "IsolateID": X.index,
             "Prediction": preds
@@ -182,8 +184,7 @@ def run_evaluation(
         logging.info("Predictions written to ➜ %s", output_file)
         return
 
-    logging.info("Reading feature matrix ➜ %s", features_tsv)
-    df = pd.read_csv(features_tsv, sep="\t", index_col=0)
+
     if label_col not in df.columns or group_col not in df.columns:
         raise KeyError("label or group column missing in TSV header")
 
@@ -389,8 +390,8 @@ def parse_args():
     p = argparse.ArgumentParser("Grouped‑CV evaluation (TSV outputs only)")
     p.add_argument("--model", type=Path, required=True, help="trained *.joblib artefact")
     p.add_argument("--features", type=Path, required=True, help="TSV with features + label + group")
-    p.add_argument("--label", required=True, help="name of the label column")
-    p.add_argument("--group_column", required=True, help="name of the group column")
+    p.add_argument("--label", required=False, help="name of the label column")
+    p.add_argument("--group_column", required=False, help="name of the group column")
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--n_splits", type=int, help="CV folds (default 5)")
     group.add_argument('--no_cv', action='store_true', help='Skip CV and predict full dataset once')

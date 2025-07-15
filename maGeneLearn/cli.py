@@ -576,7 +576,8 @@ def test(click_ctx: click.Context, *,
          group_column: str,
          output_dir: Path | None,
          muvr_file: Path | None,
-         test_metadata : Path | None) -> None:
+         test_metadata : Path | None,
+         predict_only) -> None:
 
     #1. Sanity check
     if (full_features is None) == (ready_features is None):
@@ -586,10 +587,16 @@ def test(click_ctx: click.Context, *,
             "or --features-test (ready feature table)."
         )
 
-    if full_features and not (muvr_file and test_metadata):
-        raise click.UsageError(
-            "--features also needs --muvr-file and --test-metadata."
-        )
+    if full_features and not muvr_file:
+        raise click.UsageError("--features also needs --muvr-file")
+
+    if full_features and not predict_only and not test_metadata:
+        raise click.UsageError("--features also needs --test-metadata unless using --predict-only")
+
+    # if full_features and not (muvr_file and test_metadata):
+    #     raise click.UsageError(
+    #         "--features also needs --muvr-file and --test-metadata."
+    #     )
 
     #2 - Basic context
     base = output_dir or Path(datetime.now().strftime("%y%m%d_%H%M"))
@@ -614,19 +621,39 @@ def test(click_ctx: click.Context, *,
 
         d = ctx.step_dir(3, "final_features")
         script = STEPS_DIR / "03_extract_features.py"
-        run([
+
+        cmd = [
             sys.executable, str(script),
             "--muvr_file", str(muvr_file.resolve()),
             "--chisq_file", str(ctx.full_matrix),
-            "--test_metadata", str(test_metadata.resolve()),
             "--output_dir", str(d),
-            "--label", label,
-            "--group_column", group_column,
-            "--name", name
-        ], cwd=d, log=d / "extract_test.log",
-            dry=ctx.dry_run)
+            "--name", name,
+        ]
 
+        if not predict_only:
+            if test_metadata is None:
+                raise click.UsageError("--test_metadata required unless using --predict-only")
+            cmd.extend([
+                "--test_metadata", str(test_metadata.resolve()),
+                "--label", label,
+                "--group_column", group_column,
+            ])
+
+        run(cmd, cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
         ctx.feat_test = (d / f"{name}_test.tsv").resolve()
+        # run([
+        #     sys.executable, str(script),
+        #     "--muvr_file", str(muvr_file.resolve()),
+        #     "--chisq_file", str(ctx.full_matrix),
+        #     "--test_metadata", str(test_metadata.resolve()),
+        #     "--output_dir", str(d),
+        #     "--label", label,
+        #     "--group_column", group_column,
+        #     "--name", name
+        # ], cwd=d, log=d / "extract_test.log",
+        #     dry=ctx.dry_run)
+
+        # ctx.feat_test = (d / f"{name}_test.tsv").resolve()
 
         # ── 4. branch B – ready table supplied ---------------------------------
     else:

@@ -57,9 +57,9 @@ def parse_arguments():
                         help='Path to metadata TSV for training split')
     parser.add_argument('--test_metadata', type=str, required=False,
                         help='Path to metadata TSV for testing split')
-    parser.add_argument('--label', type=str, required=True,
+    parser.add_argument('--label', type=str, required=False,
                         help='Name of the label column to include in output')
-    parser.add_argument('--group_column', type=str, required=True,
+    parser.add_argument('--group_column', type=str, required=False,
                         help = 'Name of the grouping column in metadata')
     parser.add_argument('--output_dir', type=str, required=True,
                         help = 'Directory where the extracted feature matrix will be written')
@@ -180,11 +180,15 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
 def main():
     args = parse_arguments()
 
+    # if not (args.train_metadata or args.test_metadata):
+    #     sys.exit(
+    #         "ERROR: You must supply either --train_metadata, --test_metadata, "
+    #         "or both.  Nothing to extract otherwise."
+    #     )
+
     if not (args.train_metadata or args.test_metadata):
-        sys.exit(
-            "ERROR: You must supply either --train_metadata, --test_metadata, "
-            "or both.  Nothing to extract otherwise."
-        )
+        print("⚠️  No metadata provided — extracting features only (predict-only mode).")
+
 
     print(f"Loading selected features from {args.muvr_file}")
     features = load_selected(args.muvr_file, args.label)
@@ -220,6 +224,15 @@ def main():
         )
     else:
         print("No test_metadata given – skipping hold-out feature table.")
+
+    if not args.train_metadata and not args.test_metadata:
+        # predict-only mode: extract and write features with no label/group
+        feats = extract_features(args.chisq_file, features)
+        outdir = Path(args.output_dir)
+        outdir.mkdir(parents=True, exist_ok=True)
+        final_path = outdir / f"{args.name}_test.tsv"
+        feats.to_csv(final_path, sep="\t")
+        print(f"✅ Predict-only test table saved to {final_path}")
 
 
     print("Done.")
