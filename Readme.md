@@ -26,7 +26,7 @@ now `maGeneLearn` should be on your $PATH
 ## 2 Test the installation
 ```bash
 maGeneLearn --help
-maGeneLearn train --meta-file test/full_train/2023_jp_meta_file.tsv --features test/full_train/full_features.tsv --name full_pipe --model RFC --chisq --muvr --upsampling random --group-column t5 --label SYMP --lineage-col LINEAGE --k 5000 --n-iter 10
+maGeneLearn train --meta-file test/full_train/2023_jp_meta_file.tsv --features test/full_train/full_features.tsv --name full_pipe --model RFC --chisq --muvr --upsampling random --group-column t5 --label SYMP --lineage-col LINEAGE --k 5000 --n-iter 10 --output-dir full_pipe
 ```
 
 
@@ -129,36 +129,90 @@ maGeneLearn train
 
 ## 5 · test – evaluate saved model
 
-* **Two mutually exclusive ways to give test features:
+* **Three ways to give test features:**
 
-| scenario                                          | flags you pass                                       |
-| ------------------------------------------------- | ---------------------------------------------------- |
-| **A. raw full matrix** (filter k-mers on the fly) | `--features` (full)  `--muvr-file` `--test-metadata` |
-| **B. ready matrix** (pre-filtered)                | `--features-test`                                    |
+| scenario                                                      | flags you pass                                       |
+| ------------------------------------------------------------- | ---------------------------------------------------- |
+| **A.    Evaluate performance on a test-set**  | `--features-test` `--label` `--group-column`                                     |
+| **B.    Classifying new samples WITHOUT labels**  | `--features` (full) `--muvr-file` `--predict-only`                                  |
+| **C.    Classifying new samples WITH labels**            | `--features` (full)  `--muvr-file` `--test-metadata` `--label` `--group-column` |
 
 
-* **Required
+* **Required**
+  
 | flag           | meaning                        |
 | -------------- | ------------------------------ |
 | `--model-file` | `.joblib` from the *train* run |
 | `--name`       | prefix for outputs             |
 
+### **Scenario A - Evaluate performance on a test-set***
+
+In this scenario you have already run a **full** training pipeline using `maGeneLearn train`. Now, you want to evaluate the performance on the test-set.
+After running `maGeneLearn train`, your model file will be located in `<output-dir>/04_model/<name>.joblib`. And your features-test matrix will be located in `<output-dir>/03_final_features/<name>_test.tsv`. We will use these files to evaluate performance.
+
+Following on the installation example from Section 2 of this user-guide, we can evaluate the performance on the test-set using the following command: 
 
 ```bash
-magene-learn test \
-  --model-file results/04_model/STEC_RFC_none.joblib \
-  --features   data/kmers.tsv \
-  --muvr-file  results/02_muvr/STEC_muvr_RFC_min.tsv \
-  --test-metadata data/meta_external.tsv \
-  --name extA
+maGeneLearn test \
+  --model-file full_pipe/04_model/full_pipe_RFC_random.joblib \
+  --features-test full_pipe/03_final_features/full_pipe_test.tsv \
+  --name full_pipe\
+  --output-dir full_pipe\
+  --label SYMP \
+  --group-column t5
 ```
 
+This will create a new directory `/07_test_eval` inside the existing directory `/full_pipe`. In this directory you'll find the predictions on each isolate from the test set, the evaluation metrics and the SHAP importance values.
+
+### **Scenario B - Classifying new samples WITHOUT labels**
+
+In this scenario, you have trained your ML-model using any variation of the `maGeneLearn train` pipeline. Now, you have a new set of isolates for which you would like to make predictions. This is probably the most common use case in a practical setting. 
+
+Again, in the example run below we use the model created in **Section 2** and one of the test files included in the git repo. 
+
 ```bash
-magene-learn test \
-  --model-file results/04_model/STEC_RFC_none.joblib \
-  --features-test results/03_final/STEC_test.tsv \
-  --name extB
+maGeneLearn test \
+  --predict-only \
+  --model-file full_pipe/04_model/full_pipe_RFC_random.joblib \
+  --features test/full_train/full_features.tsv \
+  --muvr-file full_pipe/02_muvr/full_pipe_muvr_RFC_min.tsv \
+  --name new_test \
+  --output-dir predict_only_test \
 ```
+This command will create two new directories:
+
+1- `<output-dir>/03_final_features`: This directory contains a presence/absence file with the features used to train the model.
+
+2- `<output-dir>/07_test_eval`: This directory you'll find a file with the predictions of each new isolate.
+
+### **Scenario C - Classifying new samples WITH labels**
+
+In this scenario, you have trained your ML-model using any variation of the `maGeneLearn train` pipeline. Now, you have a new set of isolates for which you would like to make predictions and evaluate the performance. This probably occurs if you want to perform an external validation of your model, with a distinct dataset.
+
+In the example run below we use the model created in **Section 2** and one of the test files included in the git repo. 
+
+```bash
+maGeneLearn test \
+  --model-file full_pipe/04_model/full_pipe_RFC_random.joblib \
+  --features test/full_train/full_features.tsv \
+  --muvr-file full_pipe/02_muvr/full_pipe_muvr_RFC_min.tsv \
+  --test-metadata test/full_train/2023_jp_meta_file.tsv \
+  --name independent_test \
+  --output-dir independent_test \
+  --label SYMP \
+  --group-column t5
+```
+This command will create two new directories:
+
+1- `<output-dir>/03_final_features`: This directory contains a presence/absence file with the features used to train the model.
+
+2- `<output-dir>/07_test_eval`: This directory you'll find a file with the predictions of each new isolate, SHAP values and evaluation metrics.
+
+
+## 6 · Contact
+
+Do you have any doubts? Please contact me at: j.a.paganini@uu.nl.
+
 
 
 
