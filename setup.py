@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="maGeneLearn",
-    version="0.1.0",
+    version="0.1.1",
     description="A CLI wrapper for the maGeneLean ML pipeline",
     author="Julian A. Paganini",
     author_email="j.a.paganini@uu.nl",
