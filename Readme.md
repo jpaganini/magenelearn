@@ -15,7 +15,7 @@ The wrapper exposes **two** high-level commands:
 ## 1 Installation
 
 ```bash
-git clone <repo>
+git clone https://github.com/jpaganini/magenelearn.git
 cd maGeneLearn
 pip install -e .
 ```
