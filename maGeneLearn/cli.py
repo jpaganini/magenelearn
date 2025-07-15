@@ -565,6 +565,7 @@ def train(click_ctx: click.Context, *,
 @click.option("--features","full_features",type=click.Path(exists=True, path_type=Path),required=False,help="Full k-mer count matrix (will be filtered by --muvr-file).")
 @click.option("--test-metadata",  type=click.Path(exists=True, path_type=Path), help="Metadata TSV for the external test set (required with --extract-features)")
 @click.option("--muvr-file",  type=click.Path(exists=True, path_type=Path), help="*_muvr_*_min.tsv file with selected features(required with --extract-features)")
+@click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
 @click.pass_context
 def test(click_ctx: click.Context, *,
          model_file: Path,
@@ -632,7 +633,23 @@ def test(click_ctx: click.Context, *,
         ctx.feat_test = ready_features.resolve()
 
         # ── 5. evaluate --------------------------------------------------------
-    evaluate_holdout(ctx)
+
+    if predict_only:
+        d = ctx.step_dir(7, "test_eval")
+        script = STEPS_DIR / "05_evaluate_model.py"
+        run([
+            sys.executable, str(script),
+            "--model", str(ctx.model_file),
+            "--features", str(ctx.feat_test),
+            "--no_cv",
+            "--predict_only",
+            "--output_dir", str(d),
+            "--name", ctx.name + "_test",
+        ], cwd=d, log=d / "predict.log", dry=ctx.dry_run)
+    else:
+        evaluate_holdout(ctx)
+
+    #evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")
 
 # ---------------------------------------------------------------------------

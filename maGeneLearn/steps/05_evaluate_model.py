@@ -14,6 +14,7 @@ Inputs:
   --log_level      Logging verbosity level (choices: DEBUG, INFO, WARNING, ERROR). Default: INFO.
   --fasta          If set, it produces a fasta-formatted output of the features used to train the model. Features are named according to importance based on the feature_importance() function from scikit-learn.
                    Works if features are DNA sequences, and if sequences match column names.
+  --predict_only   If set, it predicts new samples that don't contain labels. So, no evaluation metrics are calculated.
 
 Outputs:
   <name>_predictions_probabilities.tsv            Tab-separated file with  class probability columns indexed by sample ID, and also with 'truth' and 'prediction' columns for each sample.
@@ -153,7 +154,8 @@ def run_evaluation(
     no_cv: bool,
     output_dir: Path,
     name: str,
-    fasta: bool
+    fasta: bool,
+    predict_only: bool = False
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
 
@@ -164,6 +166,21 @@ def run_evaluation(
     # 1️⃣  Load artefacts & data ------------------------------------------------
     logging.info("Loading model ➜ %s", model_path)
     pipeline = joblib.load(model_path)  # imblearn.Pipeline or estimator
+
+    if predict_only:
+        logging.info("Prediction-only mode enabled. Skipping evaluation.")
+        X = df.drop(columns=[label_col, group_col])
+        model = joblib.load(model_path)
+        preds = model.predict(X)
+        pred_df = pd.DataFrame({
+            "IsolateID": X.index,
+            "Prediction": preds
+        })
+        output_file = output_dir / f"{name}_predictions.tsv"
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        pred_df.to_csv(output_file, sep="\t", index=False)
+        logging.info("Predictions written to ➜ %s", output_file)
+        return
 
     logging.info("Reading feature matrix ➜ %s", features_tsv)
     df = pd.read_csv(features_tsv, sep="\t", index_col=0)
@@ -381,6 +398,7 @@ def parse_args():
     p.add_argument("--name", required=True, help="prefix for output files")
     p.add_argument("--log_level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     p.add_argument("--fasta", action="store_true", help = "If set, write a FASTA file of features sorted by importance")
+    p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
     return p.parse_args()
 
 
@@ -401,7 +419,8 @@ def main():
             no_cv=args.no_cv,
             output_dir=args.output_dir,
             name=args.name,
-            fasta=args.fasta
+            fasta=args.fasta,
+            predict_only=args.predict_only
         )
     except Exception:
         logging.exception("Evaluation failed")
