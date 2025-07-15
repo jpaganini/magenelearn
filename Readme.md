@@ -1,7 +1,9 @@
+ <div align="center"><img src="figures/logo.png" alt="maGeneLearn" width="600"/></div>
+
 # MaGeneLearn  – Bacterial genomics ML pipeline
 MaGeneLearn is a modular CLI that chains together a set of numbered Python
 scripts (`00_split_dataset.py → 05_evaluate_model.py`) to train and evaluate
-machine-learning models from (potentially huge) k-mer count tables.
+machine-learning models from (potentially huge) presence/absence tables.
 
 The wrapper exposes **two** high-level commands:
 
@@ -19,16 +21,16 @@ git clone https://github.com/jpaganini/magenelearn.git
 cd maGeneLearn
 pip install -e .
 ```
-# now `magene-learn` should be on your $PATH
+now `maGeneLearn` should be on your $PATH
 
-### 1.1 Test the installation
+## 2 Test the installation
 ```bash
 maGeneLearn --help
 maGeneLearn train --meta-file test/full_train/2023_jp_meta_file.tsv --features test/full_train/full_features.tsv --name full_pipe --model RFC --chisq --muvr --upsampling random --group-column t5 --label SYMP --lineage-col LINEAGE --k 5000 --n-iter 10
 ```
 
 
-## 2 Command-line reference
+## 3 Command-line reference
 
 ```bash
 maGeneLearn train [OPTIONS]               # model building pipeline
@@ -38,7 +40,7 @@ maGeneLearn <subcmd> --help               # help for a sub-command
 ```
 
 
-## 3 · train – build a model end-to-end
+## 4 · train – build a model end-to-end
 
 ### Always Required
 
@@ -70,7 +72,7 @@ maGeneLearn <subcmd> --help               # help for a sub-command
 
 ### Typical flavours
 
-* **Full pipeline (split → Chi² → MUVR → SMOTE + RFC)
+* **Full pipeline (split → Chi² → MUVR → (Upsampling) + model optimization)**
 ```bash
 maGeneLearn train \
   --meta-file test/full_train/2023_jp_meta_file.tsv \
@@ -89,7 +91,7 @@ maGeneLearn train \
 
 * **Skip Chi² (use an already-filtered matrix, still run MUVR)**  
   You already produced a Chi²-filtered table elsewhere (or manually picked  
-  a k-mer subset) and just want MUVR + model training.
+  a subset of features) and just want MUVR + model training.
 
 ```bash
   maGeneLearn train \
@@ -125,7 +127,7 @@ maGeneLearn train
   --n-iter 10
 ```
 
-## 4 · test – evaluate saved model
+## 5 · test – evaluate saved model
 
 * **Two mutually exclusive ways to give test features:
 
