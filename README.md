@@ -17,9 +17,9 @@ The wrapper exposes **two** high-level commands:
 ## 1 Installation
 
 ```bash
-git clone https://github.com/jpaganini/magenelearn.git
-cd maGeneLearn
-pip install -e .
+conda create -n magenelearn python=3.9
+conda activate magenelearn
+pip install magenelearn
 ```
 now `maGeneLearn` should be on your $PATH
 
