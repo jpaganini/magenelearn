@@ -19,7 +19,7 @@ The wrapper exposes **two** high-level commands:
 ```bash
 conda create -n magenelearn python=3.9
 conda activate magenelearn
-pip install magenelearn
+pip install maGeneLearn
 ```
 now `maGeneLearn` should be on your $PATH
 
