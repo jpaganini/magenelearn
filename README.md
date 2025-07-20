@@ -26,7 +26,7 @@ now `maGeneLearn` should be on your $PATH
 ## 2 Test the installation
 ```bash
 maGeneLearn --help
-maGeneLearn train --meta-file test/full_train/2023_jp_meta_file.tsv --features test/full_train/full_features.tsv --name full_pipe --model RFC --chisq --muvr --upsampling random --group-column t5 --label SYMP --lineage-col LINEAGE --k 5000 --n-iter 10 --output-dir full_pipe
+maGeneLearn train --meta-file test/full_train/2023_jp_meta_file.tsv --features test/full_train/full_features.tsv --name full_pipe --n-splits 5 --model RFC --chisq --muvr --upsampling random --group-column t5 --label SYMP --lineage-col LINEAGE --k 5000 --n-iter 10 --output-dir full_pipe --n-splits-cv 7
 ```
 
 
@@ -63,7 +63,8 @@ maGeneLearn <subcmd> --help               # help for a sub-command
 | `--features-train`   | –                       | pre-built training matrix – skips 00-03                |
 | `--features-test`    | –                       | pre-built hold-out matrix – skips 07                   |
 | `--upsampling`       | `none / smote / random` |                                                        |
-| `--n-splits`         | 5                       | CV folds for training                                  |
+| `--n-splits`         | 5                       | Number of folds to create training/test splits. A value of 5 will be equal to do a 80/20 split        |
+| `--n-splits-cv`         | 7                       | Number of folds to evaluate model performance on the training set via CV         |
 | `--scoring`          | balanced_accuracy       | Metric used to select the best hyperparameters         |
 | `--output-dir`       | timestamp               | root of the run                                        |
 | `--lineage-col`      | LINEAGE                 | Column name. Use to split the data with stratification |
@@ -78,15 +79,17 @@ maGeneLearn train \
   --meta-file test/full_train/2023_jp_meta_file.tsv \
   --features  test/full_train/full_features.tsv \
   --name STEC \
+  --n-splits 5 \
   --muvr-model XGBC \
   --model RFC \
   --chisq --muvr \
   --upsampling smote\
-  --group-column t5
-  --label SYMP
-  --lineage-col LINEAGE 
-  --k 5000 
-  --n-iter 10
+  --group-column t5 \
+  --label SYMP \
+  --lineage-col LINEAGE \ 
+  --k 5000 \
+  --n-iter 10 \
+  --n-splits-cv 7
 ```
 
 * **Skip Chi² (use an already-filtered matrix, still run MUVR)**  
