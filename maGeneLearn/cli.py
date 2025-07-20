@@ -153,6 +153,7 @@ class Context:
     muvr_model: str
     upsample: str  # "none" | "smote" | "random"
     n_splits: int
+    n_splits_cv: int = 7
     dry_run: bool = False
     label: str = "outcome"
     group_col: str = "group"
@@ -348,7 +349,7 @@ def evaluate_train(ctx: Context) -> None:
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_train),
-        "--n_splits", str(ctx.n_splits),
+        "--n_splits", str(ctx.n_splits_cv),
         "--output_dir", str(d),
         "--name", ctx.name + "_train",
         "--label", ctx.label,
@@ -397,7 +398,8 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--model", type=click.Choice(["XGBC", "RFC"]), required=True, help="Classifier used in the final training step (04_train_model.py)")
 @click.option("--muvr-model","muvr_model", type=click.Choice(["XGBC", "RFC"]), default=None, help="Classifier used *inside* the MUVR feature-selection step ""(defaults to the value of --model)")
 @click.option("--upsampling", type=click.Choice(["none", "smote", "random"]), default="none")
-@click.option("--n-splits", "n_splits", default=5, show_default=True)
+@click.option("--n-splits", "n_splits", default=5, show_default=True,  help="Number of folds used in the initial train/test split (Step 00)")
+@click.option("--n-splits-cv", "n_splits_cv", default=7, show_default=True, help="Number of CV folds used in training evaluation (Step 06)")
 @click.option("--output-dir", type=click.Path(path_type=Path))
 @click.option("--chisq/--no-chisq", "chisq_flag", default=False)
 @click.option("--muvr/--no-muvr", "muvr_flag", default=False)
@@ -439,6 +441,7 @@ def train(click_ctx: click.Context, *,
           muvr_model:   str,   # fallback
           upsampling:   str,
           n_splits:     int,
+          n_splits_cv:  int,
           n_iter:       int,
           scoring:      str,
           label:        str,
@@ -478,6 +481,7 @@ def train(click_ctx: click.Context, *,
         model      = model,
         upsample   = upsampling,
         n_splits   = n_splits,
+        n_splits_cv= n_splits_cv,
         dry_run    = click_ctx.obj["dry"],
         label      = label,
         group_col  = group_column,
