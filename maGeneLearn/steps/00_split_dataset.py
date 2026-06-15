@@ -3,10 +3,8 @@ import logging
 import random
 from pathlib import Path
 from typing import Tuple, List
-
-import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold, GroupKFold
 
 """
 00_split_dataset.py
@@ -140,28 +138,75 @@ def split_by_lineage(
     train_parts: List[pd.DataFrame] = []
     test_parts: List[pd.DataFrame] = []
 
-    #rng = random.Random(seed)
-    skf = StratifiedGroupKFold(n_splits=n_splits)
+    lineage_rng = random.Random(seed)
 
     for lineage, group_df in metadata.groupby(lineage_col):
-        if group_df.shape[0] < n_splits:
+
+        n_samples = group_df.shape[0]
+        n_groups = group_df[group_col].nunique()
+        effective_splits = min(n_splits, n_groups)
+        class_counts = group_df[outcome_col].value_counts(dropna=False)
+
+        if n_groups < 2:
             logging.warning(
-                f"Skipping lineage '{lineage}' with {group_df.shape[0]} samples (< {n_splits} splits)."
+                f"Lineage '{lineage}' has only one unique group(s). "
+                f"Assigning all samples to train."
             )
+            train_parts.append(group_df)
             continue
 
         labels = group_df[outcome_col].values
         clusters = group_df[group_col].values
 
-        lineage_rng = random.Random(seed)
-        splits = list(skf.split(group_df, labels, groups=clusters))
+        if (
+                n_samples >= n_splits
+                and n_groups >= n_splits
+                and class_counts.min() >= n_splits
+        ):
+            splitter = StratifiedGroupKFold(n_splits=n_splits)
+            split_type = "StratifiedGroupKFold"
+        else:
+            splitter = GroupKFold(n_splits=effective_splits)
+            split_type = "GroupKFold fallback"
+
+
+        logging.info(
+            f"Lineage '{lineage}': using {split_type}. "
+            f"n_samples={n_samples}, n_groups={n_groups}, "
+            f"class_counts={class_counts.to_dict()}"
+        )
+
+        try:
+            splits = list(splitter.split(group_df, labels, groups=clusters))
+        except ValueError as e:
+            logging.warning(
+                f"Lineage '{lineage}' could not be split ({e}). "
+                f"Assigning all samples to train."
+            )
+            train_parts.append(group_df)
+            continue
+
         train_idx, test_idx = lineage_rng.choice(splits)
 
         train_parts.append(group_df.iloc[train_idx])
         test_parts.append(group_df.iloc[test_idx])
 
+    if len(train_parts) == 0:
+        raise RuntimeError(
+            "No train genomes were generated. "
+            "Check group structure, n_splits, and lineage definitions."
+        )
+
     final_train = pd.concat(train_parts, ignore_index=False)
+
+    if len(test_parts) == 0:
+        raise RuntimeError(
+            "No test genomes were generated. All lineages were assigned to train. "
+            "Check group structure, n_splits, and lineage definitions."
+        )
+
     final_test = pd.concat(test_parts, ignore_index=False)
+
     return final_train, final_test
 
 
@@ -186,6 +231,10 @@ def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    if args.n_splits < 2:
+        logging.error("--n-splits must be >= 2.")
+        return
+
     # ensure output directory exists
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -198,21 +247,48 @@ def main():
         low_memory=False
     )
 
-    # Force group and lineage columns to uniform string type
-    for col in [args.group_col, args.lineage_col]:
+    # check for missing required-columns or missing values in these
+    required_cols = [
+        args.id_col,
+        args.lineage_col,
+        args.group_col,
+        args.outcome_col
+    ]
+
+    missing_cols = [col for col in required_cols if col not in metadata.columns]
+
+    if missing_cols:
+        logging.error(f"Required column(s) not found: {missing_cols}")
+        return
+
+    metadata[required_cols] = metadata[required_cols].replace(
+        ["", " ", "NA", "N/A", "nan", "None"],
+        pd.NA
+    )
+
+    missing_required = metadata[required_cols].isna().any(axis=1)
+
+    if missing_required.any():
+        logging.warning(
+            f"Dropping {missing_required.sum()} rows with missing values in required columns: "
+            f"{required_cols}"
+        )
+        metadata = metadata.loc[~missing_required].copy()
+
+    # Force columns to uniform string type
+    for col in [args.group_col, args.lineage_col, args.outcome_col]:
         metadata[col] = metadata[col].astype(str).str.strip()
 
+    if metadata[args.id_col].duplicated().any():
+        duplicated_ids = metadata.loc[metadata[args.id_col].duplicated(), args.id_col].unique()
+        raise ValueError(
+            f"Duplicate sample IDs found in '{args.id_col}', e.g. {duplicated_ids[:10]}"
+        )
+
     # set sample ID index
-    if args.id_col not in metadata.columns:
-        logging.error(f"ID column not found: {args.id_col}")
-        return
     metadata = metadata.set_index(args.id_col)
 
-    # check lineage, group, outcome columns
-    for col in (args.lineage_col, args.group_col, args.outcome_col):
-        if col not in metadata.columns:
-            logging.error(f"Required column not found: {col}")
-            return
+
 
     # split dataset
     train_df, test_df = split_by_lineage(
