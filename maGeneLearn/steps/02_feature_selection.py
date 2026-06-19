@@ -126,7 +126,8 @@ def get_opts_muvr():
         args.remove_na,
         args.method,
         args.perc,
-        args.alpha
+        args.alpha,
+        args.n_jobs
     )
 
 def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, remove_na=False):
@@ -317,7 +318,8 @@ if __name__ == "__main__":
             remove_na,
             method,
             perc,
-            alpha
+            alpha,
+            n_jobs
         ) = get_opts_muvr()
         print("Filtering data")
         train_filtered = prepare_data_muvr(
@@ -346,6 +348,7 @@ if __name__ == "__main__":
             remove_na=remove_na,
             method=method,
             perc=perc,
-            alpha=alpha
+            alpha=alpha,
+            n_jobs=n_jobs
         )
 
