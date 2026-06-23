@@ -343,7 +343,10 @@ def run_evaluation(
 
             # detect if pipeline has named steps (oversampler/model) or raw estimator
             named = hasattr(clf, 'named_steps')
-            uses_oversampler = named and 'oversampler' in clf.named_steps
+            uses_sampler = named and (
+                'sampler' in clf.named_steps or
+                'oversampler' in clf.named_steps)
+
             if named:
                 model_step = clf.named_steps.get('model', clf)
             else:
@@ -352,7 +355,7 @@ def run_evaluation(
 
             # balanced sample‑weights for XGBoost when *no* oversampling step exists
             fit_kwargs = {}
-            if is_xgb and not uses_oversampler:
+            if is_xgb and not uses_sampler:
                 key = 'model__sample_weight' if named else 'sample_weight'
                 fit_kwargs[key] = compute_sample_weight('balanced', y_tr)
 

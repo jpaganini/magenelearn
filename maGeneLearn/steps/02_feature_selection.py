@@ -126,13 +126,14 @@ def get_opts_muvr():
         args.remove_na,
         args.method,
         args.perc,
-        args.alpha
+        args.alpha,
+        args.n_jobs
     )
 
 def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, remove_na=False):
 
     train_data_df = pd.read_csv(train_data, sep='\t', header=0, index_col=0)
-
+    train_data_df.index = train_data_df.index.astype(str).str.strip()
     train_data_muvr = train_data_df.sort_index().drop_duplicates(subset=[group_col, outcome_col],
                                                        keep='last')
 
@@ -173,6 +174,7 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     while not chunk_chisq.empty:
         # Set the index as the first column
         chunk_chisq.set_index(chunk_chisq.columns[0], inplace=True)
+        chunk_chisq.index = chunk_chisq.index.astype(str).str.strip()
         chunk_chisq = chunk_chisq.astype("int8")
 
         # Merge the current line with isolate_metadata based on your desired criteria
@@ -216,6 +218,8 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
 
     X_muvr = model_input.drop(columns=[target_col]).to_numpy()
     feature_names = model_input.drop(columns=[target_col]).columns
+
+    print(f"MUVR input: {model_input.shape[0]} isolates and {len(feature_names)} features")
 
     if method == "muvr":
         feature_selector = FeatureSelector(
@@ -314,7 +318,8 @@ if __name__ == "__main__":
             remove_na,
             method,
             perc,
-            alpha
+            alpha,
+            n_jobs
         ) = get_opts_muvr()
         print("Filtering data")
         train_filtered = prepare_data_muvr(
@@ -343,6 +348,7 @@ if __name__ == "__main__":
             remove_na=remove_na,
             method=method,
             perc=perc,
-            alpha=alpha
+            alpha=alpha,
+            n_jobs=n_jobs
         )
 

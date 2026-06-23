@@ -115,6 +115,7 @@ def extract_selected_columns(chisq_path: Path,
 
     # column 0 is still present; make it the index
     df.set_index(df.columns[0], inplace=True)
+    df.index = df.index.astype(str).str.strip()
 
     # 3️⃣  convert only the k-mer columns
     df.iloc[:, :] = df.iloc[:, :].astype("int8")
@@ -153,6 +154,7 @@ def load_split_metadata(meta_path, label_col, group_col=None):
         groups: pd.Series of group IDs indexed by sample ID
     """
     meta = pd.read_csv(meta_path, sep='\t', index_col=0)
+    meta.index = meta.index.astype(str).str.strip()
     dupes = meta.index[meta.index.duplicated()]
     print(len(dupes), "duplicate sample IDs:", dupes[:10])
     #missing = [col for col in (label_col, group_col) if col not in meta.columns]
@@ -195,7 +197,13 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
     parts = [feats, labels]
     if groups is not None:
         parts.append(groups)
+
+    print(f"labels: {labels.shape[0]}")
+    print(f"features: {feats.shape[0]}")
+
     df = pd.concat(parts, axis=1, join='inner')
+
+    print(f"after merge: {df.shape[0]}")
 
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)

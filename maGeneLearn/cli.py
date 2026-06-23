@@ -171,6 +171,9 @@ class Context:
     boruta_perc: int = 100
     boruta_alpha: float = 0.05
     boruta_max_iter: int = 100
+    muvr_n_repetitions: int = 10
+    muvr_n_outer: int = 5
+    muvr_n_inner: int = 4
 
 
     # artefacts populated as we go
@@ -272,14 +275,14 @@ def feature_selection(ctx: Context, method: str) -> None:
         click.echo("Error: --muvr/--boruta requires Chi² step", err=True)
         sys.exit(1)
 
-    d = ctx.step_dir(2, "muvr")
+    d = ctx.step_dir(2, method)
     script = STEPS_DIR / "02_feature_selection.py"
 
     # tmp folder that holds the Chi²-filtered training matrix for MUVR/Boruta
     tmp_dir = (ctx.base_dir / "tmp_muvr_data").resolve()
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
-    run([
+    cmd = [
         sys.executable, str(script),
         "--train_data", str(ctx.train_meta.resolve()),
         "--chisq_file", str(ctx.chisq_file.resolve()),
@@ -289,13 +292,32 @@ def feature_selection(ctx: Context, method: str) -> None:
         "--outcome_col", ctx.label,
         "--filtered_train_dir", str(tmp_dir),
         "--name", ctx.name,
-        "--features-dropout-rate", str(ctx.dropout_rate),
         "--n-jobs", str(ctx.n_jobs),
         "--method", method,
-        "--perc", str(ctx.boruta_perc),
-        "--alpha", str(ctx.boruta_alpha),
-        "--max-iter", str(ctx.boruta_max_iter)
-    ], cwd=d, log=d / "muvr.log", dry=ctx.dry_run, stream=True)
+    ]
+
+    if method == "muvr":
+        cmd.extend([
+            "--features-dropout-rate", str(ctx.dropout_rate),
+            "--n-repetitions", str(ctx.muvr_n_repetitions),
+            "--n-outer", str(ctx.muvr_n_outer),
+            "--n-inner", str(ctx.muvr_n_inner),
+        ])
+
+    elif method == "boruta":
+        cmd.extend([
+            "--max-iter", str(ctx.boruta_max_iter),
+            "--perc", str(ctx.boruta_perc),
+            "--alpha", str(ctx.boruta_alpha),
+        ])
+
+    run(
+        cmd,
+        cwd=d,
+        log=d / "muvr.log",
+        dry=ctx.dry_run,
+        stream=True
+    )
 
     matches = sorted(d.glob(f"{ctx.name}_{method}_{ctx.feature_model}_min.tsv"))
     if not matches:
@@ -478,6 +500,9 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
 @click.option("--chisq-file", type=click.Path(exists=True, path_type=Path))
 @click.option("--dropout-rate", "dropout_rate", type=click.FloatRange(0.0, 1.0), default=0.9, show_default=True, help="Proportion of features randomly dropped in MUVR feature selection (0–1).")
+@click.option("--muvr-n-repetitions", "muvr_n_repetitions", type=int, default=10, show_default=True, help="Number of repetitions for MUVR.")
+@click.option("--muvr-n-outer", "muvr_n_outer", type=int, default=5, show_default=True, help="Number of outer folds for MUVR.")
+@click.option("--muvr-n-inner", "muvr_n_inner", type=int, default=4, show_default=True, help="Number of inner folds for MUVR.")
 @click.option("--n-jobs", "n_jobs", type=int, default=-1,
               help="Number of parallel jobs for feature selection and model training (default: -1, all cores)")
 @click.option("--feature-selection-only", is_flag=True,
@@ -525,6 +550,9 @@ def train(click_ctx: click.Context, *,
           label:        str,
           group_column: str,
           dropout_rate: float,
+          muvr_n_repetitions: int,
+          muvr_n_outer: int,
+          muvr_n_inner: int,
           xgb_policy: str,
           n_jobs: int,
           output_dir:   Path | None) -> None:
@@ -582,6 +610,9 @@ def train(click_ctx: click.Context, *,
         boruta_perc=boruta_perc,
         boruta_alpha=boruta_alpha,
         boruta_max_iter=boruta_max_iter,
+        muvr_n_repetitions=muvr_n_repetitions,
+        muvr_n_outer=muvr_n_outer,
+        muvr_n_inner=muvr_n_inner
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
