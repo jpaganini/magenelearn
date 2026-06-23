@@ -248,7 +248,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
             )
 
     if sampling == "smote":
-        params["oversampler__k_neighbors"] = trial.suggest_int("oversampler__k_neighbors", 3, 10)
+        params["sampler__k_neighbors"] = trial.suggest_int("sampler__k_neighbors", 3, 10)
     
     elif sampling == "enn":
         params["sampler__n_neighbors"] = trial.suggest_int("sampler__n_neighbors", 3, 10)
