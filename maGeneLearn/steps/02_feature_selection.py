@@ -9,6 +9,8 @@ from concurrent.futures import ProcessPoolExecutor
 from boruta import BorutaPy
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
+import logging
+from datetime import datetime
 
 """
 02_feature_selection.py
@@ -130,6 +132,32 @@ def get_opts_muvr():
         args.n_jobs
     )
 
+def setup_logging(output_dir: str, name: str, method: str, model: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    jobid = os.environ.get("SLURM_JOB_ID", "local")
+
+    log_file = os.path.join(
+        output_dir,
+        f"{name}_{method}_{model}_{timestamp}_{jobid}.log"
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    return log_file
+
+
+
 def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, remove_na=False):
 
     train_data_df = pd.read_csv(train_data, sep='\t', header=0, index_col=0)
@@ -142,7 +170,11 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
         missing = train_data_muvr[outcome_col].isna()
         n_missing = missing.sum()
         if n_missing:
-            print(f"WARNING: --remove_na: dropping {n_missing} rows with missing '{outcome_col}'")
+            logging.warning(
+                "--remove_na: dropping %d rows with missing '%s'",
+                n_missing,
+                outcome_col
+            )
             train_data_muvr = train_data_muvr.loc[~missing]
 
     # Ensure parent directory exists
@@ -164,7 +196,7 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     # Create a dataframe to hold the results
     model_input = pd.DataFrame()
 
-    print("Loading chisq feateres")
+    logging.info("Loading Chi² features")
     # Get the first line of chisq_features
     try:
         chunk_chisq = next(reader_chisq)
@@ -199,8 +231,12 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
 
         total_to_drop = (missing_labels | missing_features).sum()
         if total_to_drop > 0:
-            print(f"WARNING: --remove_na set: dropping {total_to_drop} rows "
-                  f"({count_labels} missing labels, {count_feats} missing features)")
+            logging.warning(
+                "--remove_na set: dropping %d rows (%d missing labels, %d missing features)",
+                total_to_drop,
+                count_labels,
+                count_feats
+            )
 
             # drop them
             model_input = model_input.loc[~(missing_labels | missing_features)]
@@ -219,7 +255,11 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     X_muvr = model_input.drop(columns=[target_col]).to_numpy()
     feature_names = model_input.drop(columns=[target_col]).columns
 
-    print(f"MUVR input: {model_input.shape[0]} isolates and {len(feature_names)} features")
+    logging.info(
+        "Feature-selection input: %d isolates and %d features",
+        model_input.shape[0],
+        len(feature_names)
+    )
 
     if method == "muvr":
         feature_selector = FeatureSelector(
@@ -231,14 +271,21 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
             features_dropout_rate=features_dropout_rate
         )
 
-        print("Running MUVR")
+        logging.info("Running MUVR")
+
         executor = None
         if n_jobs != 1:
             executor = ProcessPoolExecutor(max_workers=n_jobs)
 
         feature_selector.fit(X_muvr, y_variable, executor=executor)
         selected_features = feature_selector.get_selected_features(feature_names=feature_names)
-        print(f"Number of MUVR selected features - Min: {len(selected_features.min)}, Mid: {len(selected_features.mid)}, Max: {len(selected_features.max)}")
+
+        logging.info(
+            "Number of MUVR selected features - Min: %d, Mid: %d, Max: %d",
+            len(selected_features.min),
+            len(selected_features.mid),
+            len(selected_features.max)
+        )
 
         # Obtain a dataframe containing MUVR selected features
         df_min = model_input[list(selected_features.min)]
@@ -258,7 +305,8 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
         return df_min,df_mid,df_max
     
     elif method == "boruta":
-        print("Running Boruta feature selection")
+        logging.info("Running Boruta feature selection")
+
         if model == "RFC":
             estimator = RandomForestClassifier(n_jobs=n_jobs, class_weight="balanced", random_state=42)
         elif model == "XGBC":
@@ -321,7 +369,12 @@ if __name__ == "__main__":
             alpha,
             n_jobs
         ) = get_opts_muvr()
-        print("Filtering data")
+
+        log_file = setup_logging(output_dir, name, method, model)
+        logging.info("Writing feature-selection log to %s", log_file)
+
+        logging.info("Filtering data")
+
         train_filtered = prepare_data_muvr(
             train_data,
             filtered_train_dir,
@@ -331,7 +384,7 @@ if __name__ == "__main__":
             remove_na=remove_na
         )
 
-        print("Running MUVR/Boruta feature reduction")
+        logging.info("Running MUVR/Boruta feature reduction")
         feature_reduction(
             train_filtered,
             chisq_file,

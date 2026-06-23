@@ -41,6 +41,7 @@ from sklearn.feature_selection import chi2
 from joblib import Parallel, delayed
 from tqdm import tqdm
 import psutil, threading, time, sys
+from datetime import datetime
 
 # Internal tunables (no new CLI flags)
 _BLOCK_COLS = 5000   # feature columns per read block
@@ -67,6 +68,30 @@ def get_opts():
 
 
 # ------------- Helpers -------------
+
+def setup_logging(output_dir: str, name: str) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    jobid = os.environ.get("SLURM_JOB_ID", "local")
+
+    log_file = os.path.join(
+        output_dir,
+        f"{name}_chisq_{timestamp}_{jobid}.log"
+    )
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    return log_file
 
 def read_meta(meta_file: str, label_col: str) -> pd.DataFrame:
     df = pd.read_csv(meta_file, sep="\t", header=0, dtype=str, index_col=0)
@@ -195,7 +220,8 @@ def write_memmap_matrix_as_tsv(
 
 if __name__ == "__main__":
     args = get_opts()
-    os.makedirs(args.output_dir, exist_ok=True)
+    log_file = setup_logging(args.output_dir, args.name)
+    logging.info("Writing Chi² log to %s", log_file)
 
     # Metadata & row order
     meta_df = read_meta(args.meta,args.label_col)
@@ -209,7 +235,7 @@ if __name__ == "__main__":
     y = LabelEncoder().fit_transform(y)
 
     # -------- Pass A: chi² scoring in blocks; parallel; progress bar; memory monitor --------
-    print(f"Scoring chi² in blocks over {len(keep_cols)} features; rows={len(row_index)}")
+    logging.info("Scoring Chi² in blocks over %d features; rows=%d", len(keep_cols), len(row_index))
     out_pvals = os.path.join(args.output_dir, f"{args.name}_pvalues.tsv")
 
     # Start memory monitor in background
@@ -255,6 +281,7 @@ if __name__ == "__main__":
         fill_memmap_columns_from_blocks(mm, args.features1, id_col_name, row_index, topk_in_order, _BLOCK_COLS)
         del mm
         write_memmap_matrix_as_tsv(out_topk, mm_path, (len(row_index), len(topk_in_order)), row_index, topk_in_order, row_chunk=_ROW_CHUNK)
+        write_memmap_matrix_as_tsv(out_topk, mm_path, (len(row_index), len(topk_in_order)), row_index, topk_in_order, row_chunk=_ROW_CHUNK)
         try: os.remove(mm_path)
         except Exception: pass
     else:
@@ -274,13 +301,17 @@ if __name__ == "__main__":
         try: os.remove(mm_path2)
         except Exception: pass
     else:
-        print("No features with p ≤ 0.05 found; skipping p-value feature matrix.")
+        logging.info("No features with p <= 0.05 found; skipping p-value feature matrix.")
 
     # Logs
-    print(f"Original feature count (after header cleanup): {len(keep_cols)}")
-    print(f"Reduced feature count (top {len(topk_in_order)}): {len(topk_in_order)}")
-    print(f"Saved top {args.k} features to: {out_topk}")
-    print(f"Saved p-values to: {out_pvals}")
+    logging.info("Original feature count after header cleanup: %d", len(keep_cols))
+    logging.info("Reduced feature count top %d: %d", len(topk_in_order), len(topk_in_order))
+    logging.info("Saved top %d features to: %s", args.k, out_topk)
+    logging.info("Saved p-values to: %s", out_pvals)
+
     if len(sig_in_order) > 0:
-        print(f"Saved p ≤ 0.05 features to: {os.path.join(args.output_dir, f'{args.name}_pvalues_features.tsv')}")
+        logging.info(
+            "Saved p <= 0.05 features to: %s",
+            os.path.join(args.output_dir, f"{args.name}_pvalues_features.tsv")
+        )
 

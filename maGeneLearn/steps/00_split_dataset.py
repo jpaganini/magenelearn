@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Tuple, List
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold, GroupKFold
+import sys
+import os
+from datetime import datetime
 
 """
 00_split_dataset.py
@@ -112,6 +115,26 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+def setup_logging(out_dir: Path, name: str) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    jobid = os.environ.get("SLURM_JOB_ID", "local")
+
+    log_file = out_dir / f"{name}_split_{timestamp}_{jobid}.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    return log_file
 
 def split_by_lineage(
     metadata: pd.DataFrame,
@@ -229,7 +252,9 @@ def print_value_counts(
 
 def main():
     args = parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    log_file = setup_logging(args.out_dir, args.name)
+    logging.info("Writing split log to %s", log_file)
 
     if args.n_splits < 2:
         logging.error("--n-splits must be >= 2.")

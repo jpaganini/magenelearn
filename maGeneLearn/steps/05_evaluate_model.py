@@ -52,6 +52,7 @@ import sys                           # graceful exits
 from collections import defaultdict  # group counting helper
 from pathlib import Path             # path handling
 from typing import Optional, List
+from datetime import datetime
 
 # ──────────────────────────────── 3rd‑party ──────────────────────────────────
 import joblib                        # load joblib artefact
@@ -85,6 +86,7 @@ plt.rcParams.update({"figure.autolayout": True})
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │                               utilities                                 │
 # ╰──────────────────────────────────────────────────────────────────────────╯
+
 
 
 def infer_problem_type(y: np.ndarray) -> str:
@@ -153,6 +155,27 @@ def predict_with_pipeline(pipeline, X):
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │                          core evaluation loop                           │
 # ╰──────────────────────────────────────────────────────────────────────────╯
+
+def setup_logging(output_dir: Path, name: str, log_level: str) -> Path:
+    output_dir = output_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = output_dir / f"{name}_evaluate_{timestamp}.log"
+
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    return log_file
+
 
 def run_evaluation(
     model_path: Path,
@@ -646,11 +669,15 @@ def parse_args():
 
 def main():
     args = parse_args()
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%H:%M:%S",
+
+    log_file = setup_logging(
+        args.output_dir,
+        args.name,
+        args.log_level
     )
+
+    logging.info("Writing evaluation log to %s", log_file)
+
     try:
         run_evaluation(
             model_path=args.model,

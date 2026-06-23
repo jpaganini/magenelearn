@@ -57,6 +57,7 @@ from sklearn.utils.class_weight import compute_sample_weight  # For weighted tra
 from scipy.sparse import issparse
 import time
 import logging
+from datetime import datetime
 
 # --- Machine Learning ---
 from sklearn.base import clone
@@ -117,6 +118,25 @@ def parse_arguments():
     parser.add_argument('--xgb-policy', choices=['depthwise', 'lossguide'], default='depthwise',
                         help='Tree growth policy for XGBoost (default: depthwise)')
     return parser.parse_args()
+
+def setup_logging(output_dir, name, model, sampling):
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = Path(output_dir) / f"{name}_{model}_{sampling}_{timestamp}.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    return log_file
 
 def load_data(path, label_col, group_col):
     df = pd.read_csv(path, sep='\t', index_col=0)
@@ -322,14 +342,39 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
 
     final_model = clone(pipeline)
     final_model.set_params(**best_params)
-    final_model.fit(X, y)
+
+    if model_key == "XGBC" and sampling == "none":
+        sw = compute_sample_weight("balanced", y)
+        final_model.fit(X, y, model__sample_weight=sw)
+    else:
+        final_model.fit(X, y)
+
 
     return final_model, pd.DataFrame(trial_history), best_params, best_score
 
 
 def main():
     args = parse_arguments()
+
+    log_file = setup_logging(
+        args.output_model,
+        args.name,
+        args.model,
+        args.sampling
+    )
+
+    logging.info("Writing training log to %s", log_file)
+
     X, y, groups = load_data(args.features, args.label, args.group_column)
+
+    logging.info(
+        "Loaded dataset: %d isolates, %d features",
+        X.shape[0],
+        X.shape[1]
+    )
+    logging.info("Classes: %s", list(np.unique(y)))
+    logging.info("Groups: %d unique", len(np.unique(groups)))
+
     if args.sampling in ['smote', 'enn', 'smoteenn'] or args.model == 'XGBC':
         le = LabelEncoder()
         y = le.fit_transform(y)
@@ -337,10 +382,22 @@ def main():
     if args.sampling in ['smote', 'smoteenn', 'enn'] and issparse(X):
         sys.exit(f"Error: {args.sampling.upper()} cannot be applied to a sparse matrix. Densify first.")
 
-    pipeline = prepare_pipeline(args.model, args.sampling, args.n_jobs,lr_penalty=args.lr_penalty, xgb_policy=args.xgb_policy)
+    pipeline = prepare_pipeline(
+        args.model,
+        args.sampling,
+        args.n_jobs,
+        lr_penalty=args.lr_penalty,
+        xgb_policy=args.xgb_policy
+    )
+
+    logging.info("Model: %s | Sampling: %s", args.model, args.sampling)
+    logging.info("Pipeline:\n%s", pipeline)
+
     cv_splits = get_cv_splits(X, y, groups, args.n_splits)
 
-    print("Starting Optuna hyperparameter optimization...")
+    logging.info("Prepared %d CV folds", len(cv_splits))
+    logging.info("Starting Optuna hyperparameter optimization...")
+
     best_model, trials_df, best_params, best_score = search_hyperparameters_optuna(
         pipeline, X, y, groups, cv_splits,
         args.model, args.sampling, args.n_iter, args.scoring, args.n_jobs
@@ -350,13 +407,23 @@ def main():
     Path(args.output_cv).mkdir(parents=True, exist_ok=True)
 
     if args.model == "LR":
-        model_path = os.path.join(args.output_model,
-                                  f"{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.joblib")
-        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.tsv")
-
+        model_path = os.path.join(
+            args.output_model,
+            f"{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.joblib"
+        )
+        cv_path = os.path.join(
+            args.output_cv,
+            f"CV_{args.name}_{args.model}_{args.sampling}_{args.lr_penalty}.tsv"
+        )
     else:
-        model_path = os.path.join(args.output_model, f"{args.name}_{args.model}_{args.sampling}.joblib")
-        cv_path = os.path.join(args.output_cv, f"CV_{args.name}_{args.model}_{args.sampling}.tsv")
+        model_path = os.path.join(
+            args.output_model,
+            f"{args.name}_{args.model}_{args.sampling}.joblib"
+        )
+        cv_path = os.path.join(
+            args.output_cv,
+            f"CV_{args.name}_{args.model}_{args.sampling}.tsv"
+        )
 
     if args.sampling in ['smote', 'enn', 'smoteenn'] or args.model == "XGBC":
         joblib.dump({"model": best_model, "label_encoder": le}, model_path)
@@ -365,9 +432,13 @@ def main():
 
     trials_df.to_csv(cv_path, sep="\t", index=False)
 
-    print(f"Best params: {best_params}")
-    print(f"Best score ({args.scoring[0]}): {best_score:.4f}")
-    print(f"Model saved in '{model_path}' and CV results in '{cv_path}'.")
+    logging.info("Best params: %s", best_params)
+    logging.info("Best score (%s): %.4f", args.scoring[0], best_score)
+    logging.info(
+        "Model saved in '%s' and CV results in '%s'.",
+        model_path,
+        cv_path
+    )
 
 
 if __name__ == '__main__':
