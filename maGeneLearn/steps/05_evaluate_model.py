@@ -49,7 +49,7 @@ from __future__ import annotations
 import argparse                      # CLI parsing
 import logging                       # console logging
 import sys                           # graceful exits
-from collections import defaultdict  # group counting helper
+from collections import defaultdict, Counter  # group counting helper
 from pathlib import Path             # path handling
 from typing import Optional, List
 from datetime import datetime
@@ -431,7 +431,59 @@ def run_evaluation(
                 key = 'model__sample_weight' if named else 'sample_weight'
                 fit_kwargs[key] = compute_sample_weight('balanced', y_tr)
 
-            clf.fit(X_tr, y_tr, **fit_kwargs)
+            try:
+                clf.fit(X_tr, y_tr, **fit_kwargs)
+
+            except Exception as e:
+                before_counts = Counter(y_tr)
+
+                sampler_name = "none"
+                after_counts = None
+
+                if hasattr(clf, "named_steps"):
+                    if "sampler" in clf.named_steps:
+                        sampler_name = clf.named_steps["sampler"].__class__.__name__
+                    elif "oversampler" in clf.named_steps:
+                        sampler_name = clf.named_steps["oversampler"].__class__.__name__
+
+                # Try to diagnose what the sampler did.
+                # This is only diagnostic; if it also fails, we still raise the original error.
+                if hasattr(clf, "named_steps") and "sampler" in clf.named_steps:
+                    try:
+                        X_res_dbg, y_res_dbg = clf.named_steps["sampler"].fit_resample(X_tr, y_tr)
+                        after_counts = Counter(y_res_dbg)
+                    except Exception as sampler_e:
+                        after_counts = f"Sampler diagnostic failed: {sampler_e}"
+
+                logging.error(
+                    "Model fitting failed in fold %d/%d. "
+                    "Model=%s | Sampler=%s | Train shape=%s | "
+                    "Class counts before sampling=%s | Class counts after sampling=%s",
+                    fold,
+                    n_splits,
+                    model_step.__class__.__name__,
+                    sampler_name,
+                    X_tr.shape,
+                    dict(before_counts),
+                    dict(after_counts) if isinstance(after_counts, Counter) else after_counts,
+                )
+
+                if (
+                        "num_class" in str(e)
+                        or "The target 'y' needs to have more than 1 class" in str(e)
+                        or "Found array with 0 sample" in str(e)
+                ):
+                    raise RuntimeError(
+                        f"Model fitting failed in fold {fold}/{n_splits}. "
+                        f"This is likely caused by the sampler step ({sampler_name}) producing "
+                        "an invalid training set for this fold, for example zero samples or too few "
+                        "classes after resampling/cleaning. This can happen with aggressive samplers "
+                        "such as SMOTEENN/ENN in grouped CV, especially when feature selection leaves "
+                        "few features or some classes are sparse. See log above for class counts before "
+                        "and after sampling."
+                    ) from e
+
+                raise
 
             preds, probas = predict_with_pipeline(clf, X_te)
 

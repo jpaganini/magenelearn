@@ -206,6 +206,8 @@ def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, stream: bool = False
     if dry:
         return
 
+    step_label = log.stem if log is not None else "unknown_step"
+
     if stream:
         # live stream to screen + save to log
         with open(log, "w") as lf:
@@ -219,15 +221,31 @@ def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, stream: bool = False
                 click.echo(line, nl=False)
                 lf.write(line)
             ret = proc.wait()
+
         if ret != 0:
-            click.echo(f"Step failed – see log {log}", err=True)
+            click.echo(
+                f"Step '{step_label}' failed with exit code {ret}.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Working directory: {cwd}\n"
+                f"Log file: {log}",
+                err=True
+            )
             sys.exit(ret)
     else:
         res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
         log.write_text(res.stdout + res.stderr)
+
         if res.returncode != 0:
-            click.echo(res.stderr, err=True)
-            click.echo(f"Step failed – see log {log}", err=True)
+            if res.stderr:
+                click.echo(res.stderr, err=True)
+
+            click.echo(
+                f"Step '{step_label}' failed with exit code {res.returncode}.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Working directory: {cwd}\n"
+                f"Log file: {log}",
+                err=True
+            )
             sys.exit(res.returncode)
 
 # ---------------------------------------------------------------------------
@@ -792,32 +810,49 @@ def test(click_ctx: click.Context, *,
 
         # ── 5. evaluate --------------------------------------------------------
 
-    model_stem = ctx.model_file.stem
-    parts = model_stem.split("_")
+        model_stem = ctx.model_file.stem
+        parts = model_stem.split("_")
 
-    # Defaults
-    ctx.model = "NA"
-    ctx.lr_penalty = "none"
-    ctx.upsample = "none"
+        # Defaults
+        ctx.model = "NA"
+        ctx.lr_penalty = "none"
+        ctx.upsample = "none"
 
-    # Parse from the right according to your scheme:
-    # ... <MODEL> <UPSAMPLE>                (non-LR)
-    # ... <MODEL> <LRPENALTY> <UPSAMPLE>    (LR)
-    if len(parts) >= 2:
-        last = parts[-1]           # always UPSAMPLE
-        second_last = parts[-2]    # MODEL (non-LR) OR LRPENALTY (LR)
+        valid_models = {"RFC", "XGBC", "SVM", "LR"}
+        valid_samplings = {"none", "random", "smote", "enn", "smoteenn", "random_under"}
+        valid_penalties = {"l1", "l2", "elasticnet"}
 
-    # Check if it's LR by seeing if there's a penalty token
-        if last in {"l1", "l2", "elasticnet"} and len(parts) >= 3:
-            # LR case: [..., MODEL, LRPENALTY, UPSAMPLE]
-            ctx.model = parts[-3]
-            ctx.lr_penalty = last
-            ctx.upsample = second_last
-        else:
-            # Non-LR case: [..., MODEL, UPSAMPLE]
-            ctx.model = second_last
-            ctx.upsample = last
-            ctx.lr_penalty = "none"
+        # Parse from the right.
+        # Non-LR: ..._<MODEL>_<SAMPLING>
+        # LR:     ..._<MODEL>_<SAMPLING>_<PENALTY>
+        if len(parts) >= 2:
+            if parts[-1] in valid_penalties and len(parts) >= 3:
+                # LR case: ..._LR_<sampling>_<penalty>
+                ctx.lr_penalty = parts[-1]
+
+                if parts[-3] in valid_models:
+                    ctx.model = parts[-3]
+                    ctx.upsample = parts[-2]
+                elif len(parts) >= 4 and "_".join(parts[-3:-1]) in valid_samplings:
+                    ctx.model = parts[-4]
+                    ctx.upsample = "_".join(parts[-3:-1])
+                else:
+                    raise click.UsageError(
+                        f"Could not parse LR model filename: {model_stem}"
+                    )
+
+            else:
+                # Non-LR case: ..._<MODEL>_<sampling>
+                if parts[-2] in valid_models:
+                    ctx.model = parts[-2]
+                    ctx.upsample = parts[-1]
+                elif len(parts) >= 3 and "_".join(parts[-2:]) in valid_samplings:
+                    ctx.model = parts[-3]
+                    ctx.upsample = "_".join(parts[-2:])
+                else:
+                    raise click.UsageError(
+                        f"Could not parse model filename: {model_stem}"
+                    )
 
         # Now compose the evaluation name by fusing the user-provided --name
     if ctx.model == "LR":
