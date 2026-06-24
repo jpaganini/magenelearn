@@ -143,15 +143,72 @@ def predict_with_pipeline(pipeline, X):
     preds = pipeline.predict(X)
 
     if hasattr(model, "feature_names_in_"):
-        # Align dataframe to training column order
+        # Align dataframe to training column order before both predict()
+        # and predict_proba().
         X = X.reindex(columns=model.feature_names_in_, fill_value=0)
 
+    preds = pipeline.predict(X)
+
     if hasattr(pipeline, "predict_proba"):
-        probas = pipeline.predict_proba(X)          # full matrix
+        probas = pipeline.predict_proba(X)  # full matrix
     else:
         probas = None
 
     return preds, probas
+
+def build_probability_df(probas, index, model_step, le, class_names):
+    """
+    Build a probability DataFrame with columns aligned to the global class names.
+
+    Handles cases where the fitted estimator only knows a subset of classes
+    because a sampler such as ENN/SMOTEENN removed one class during training.
+    """
+    if probas is None:
+        return None
+
+    if hasattr(model_step, "classes_"):
+        model_classes = np.asarray(model_step.classes_)
+    else:
+        model_classes = np.arange(probas.shape[1])
+
+    # Convert encoded model classes back to original labels when possible.
+    if (
+        le is not None
+        and hasattr(le, "classes_")
+        and np.issubdtype(model_classes.dtype, np.integer)
+    ):
+        model_classes = le.inverse_transform(model_classes.astype(int))
+
+    proba_cols = [str(c) for c in model_classes]
+
+    if len(proba_cols) != probas.shape[1]:
+        raise ValueError(
+            f"Number of fitted model classes ({len(proba_cols)}) does not match "
+            f"predict_proba output shape ({probas.shape[1]}). "
+            f"Model classes: {proba_cols}"
+        )
+
+    proba_df = pd.DataFrame(
+        probas,
+        index=index,
+        columns=proba_cols,
+    )
+
+    all_classes = [str(c) for c in class_names]
+
+    missing_classes = [c for c in all_classes if c not in proba_df.columns]
+    if missing_classes:
+        logging.warning(
+            "Model predict_proba() returned probabilities for only %d/%d classes. "
+            "Missing classes will be filled with probability 0.0: %s",
+            len(proba_df.columns),
+            len(all_classes),
+            missing_classes,
+        )
+
+    proba_df = proba_df.reindex(columns=all_classes, fill_value=0.0)
+
+    return proba_df
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │                          core evaluation loop                           │
 # ╰──────────────────────────────────────────────────────────────────────────╯
@@ -209,16 +266,13 @@ def run_evaluation(
         pipeline = pipeline["model"]
 
         if le_model is not None:
-            model_classes = [str(c) for c in le_model.classes_]
-            logging.info("Loaded LabelEncoder with classes: %s", model_classes)
-
-            # Apply to inner model or top level
-            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps:
-                pipeline.named_steps["model"].__dict__["classes_"] = np.array(model_classes)
-            elif hasattr(pipeline, "classes_"):
-                pipeline.__dict__["classes_"] = np.array(model_classes)
-
-            logging.info("Model classes normalized to string labels.")
+            logging.info(
+                "Loaded LabelEncoder with classes: %s",
+                [str(c) for c in le_model.classes_]
+            )
+            logging.info(
+                "Preserving fitted model classes_ for prediction/probability alignment."
+            )
 
     # ---------------------------------------------------------------
     # Handle legacy models (no encoder, numeric classes)
@@ -279,6 +333,7 @@ def run_evaluation(
         })
 
         # Add class probabilities if the model supports predict_proba().
+        # Add class probabilities if the model supports predict_proba().
         if probas is not None:
             logging.info("Adding class probability columns to prediction output.")
 
@@ -288,30 +343,18 @@ def run_evaluation(
                 else pipeline
             )
 
-            if le is not None and hasattr(le, "classes_"):
-                proba_cols = [str(c) for c in le.classes_]
-            elif hasattr(model_step, "classes_"):
-                proba_cols = [str(c) for c in model_step.classes_]
-            else:
-                proba_cols = [f"class_{i}" for i in range(probas.shape[1])]
-
-            if len(proba_cols) != probas.shape[1]:
-                raise ValueError(
-                    f"Number of probability columns ({len(proba_cols)}) does not match "
-                    f"predict_proba output shape ({probas.shape[1]})."
-                )
-
-            proba_df = pd.DataFrame(
-                probas,
+            proba_df = build_probability_df(
+                probas=probas,
                 index=X.index,
-                columns=proba_cols
+                model_step=model_step,
+                le=le,
+                class_names=class_names,
             )
 
             pred_df = pd.concat(
                 [pred_df.set_index("IsolateID"), proba_df],
                 axis=1
             ).reset_index()
-
         else:
             logging.warning(
                 "Model does not expose predict_proba(); writing predictions only."
@@ -382,9 +425,21 @@ def run_evaluation(
         preds, probas = predict_with_pipeline(pipeline, X)
         oof_true.append(y)
         oof_pred.append(preds)
-        oof_proba.append(
-            pd.DataFrame(probas, index=X.index, columns=class_names)
+        model_step = (
+            pipeline.named_steps["model"]
+            if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+            else pipeline
         )
+
+        proba_df = build_probability_df(
+            probas=probas,
+            index=X.index,
+            model_step=model_step,
+            le=le,
+            class_names=class_names,
+        )
+
+        oof_proba.append(proba_df)
         #model_step = pipeline.named_steps.get('model', pipeline)
         if hasattr(pipeline, 'named_steps'):
             # sklearn Pipeline – get the 'model' step or fall back
@@ -487,16 +542,19 @@ def run_evaluation(
 
             preds, probas = predict_with_pipeline(clf, X_te)
 
-            fold_classes = clf.named_steps.get("model", clf).classes_
-            proba_df = pd.DataFrame(probas, index=X_te.index, columns=fold_classes)
+            model_step = (
+                clf.named_steps["model"]
+                if hasattr(clf, "named_steps") and "model" in clf.named_steps
+                else clf
+            )
 
-            #add missing classes with probability 0
-            for cls in class_names:
-                if cls not in proba_df.columns:
-                    proba_df[cls] = 0.0
-            
-            #Ensure consistent column order
-            proba_df = proba_df[class_names]
+            proba_df = build_probability_df(
+                probas=probas,
+                index=X_te.index,
+                model_step=model_step,
+                le=le,
+                class_names=class_names,
+            )
 
             oof_true.append(y_te)
             oof_pred.append(preds)
@@ -567,19 +625,67 @@ def run_evaluation(
                 # --- End of diagnostic block ---
                 explainer = shap.TreeExplainer(model_step)
                 shap_vals = explainer.shap_values(X_te)
-                fold_classes_2 = model_step.classes_
+
+                # Align SHAP outputs to the original class labels.
+                # This is needed because fitted models may store classes as
+                # encoded integers, while class_names contains original labels.
+                fold_classes_2 = np.asarray(model_step.classes_)
+
+                if (
+                    le is not None
+                    and hasattr(le, "classes_")
+                    and np.issubdtype(fold_classes_2.dtype, np.integer)
+                ):
+                    fold_classes_2 = le.inverse_transform(fold_classes_2.astype(int))
+
+                fold_classes_2 = [str(c) for c in fold_classes_2]
+                target_classes = [str(c) for c in class_names]
+
+                shap_dict = {}
+
                 if isinstance(shap_vals, list):
-                    shap_dict = {cls: shap_vals[i] for i, cls in enumerate(fold_classes_2)}
+                    # Common multiclass format: one SHAP matrix per fitted class
+                    for i, cls in enumerate(fold_classes_2):
+                        if i < len(shap_vals):
+                            shap_dict[cls] = shap_vals[i]
+
+                elif isinstance(shap_vals, np.ndarray) and shap_vals.ndim == 3:
+                    # Some SHAP versions return a 3D array:
+                    # either (n_samples, n_features, n_classes)
+                    # or occasionally (n_classes, n_samples, n_features).
+                    if shap_vals.shape[2] == len(fold_classes_2):
+                        for i, cls in enumerate(fold_classes_2):
+                            shap_dict[cls] = shap_vals[:, :, i]
+
+                    elif shap_vals.shape[0] == len(fold_classes_2):
+                        for i, cls in enumerate(fold_classes_2):
+                            shap_dict[cls] = shap_vals[i, :, :]
+
+                    else:
+                        logging.warning(
+                            "Could not confidently align 3D SHAP values. "
+                            "SHAP shape=%s | fitted classes=%s",
+                            shap_vals.shape,
+                            fold_classes_2,
+                        )
+
                 else:
-                    shap_dict = {fold_classes_2[0]: shap_vals}
+                    # Binary/single-output case. The returned matrix corresponds
+                    # to one model output, so attach it to the last fitted class.
+                    # Missing classes below will receive zero SHAP values.
+                    target_cls = fold_classes_2[-1] if fold_classes_2 else target_classes[-1]
+                    shap_dict[target_cls] = shap_vals
+
                 aligned = []
-                for cls in class_names:
+                for cls in target_classes:
                     if cls in shap_dict:
                         aligned.append(shap_dict[cls])
                     else:
-                        #create zero SHAP values for missing class
+                        # Create zero SHAP values for classes absent from this fold/model.
                         aligned.append(np.zeros((X_te.shape[0], X_te.shape[1])))
+
                 shap_vals_all.append(aligned)
+
             elif isinstance(model_step, LogisticRegression):
                 logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
             else:
