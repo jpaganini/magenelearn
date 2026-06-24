@@ -263,11 +263,60 @@ def run_evaluation(
     if predict_only:
         logging.info("Prediction-only mode enabled. Skipping evaluation.")
         X = df.copy()
-        preds = pipeline.predict(X)
+
+        preds, probas = predict_with_pipeline(pipeline, X)
+        preds = np.asarray(preds)
+
+        # Convert encoded predictions back to original labels when needed.
+        # This fixes XGBoost models saved with a LabelEncoder.
+        if le is not None and hasattr(le, "classes_") and np.issubdtype(preds.dtype, np.integer):
+            logging.info("Converting encoded predictions back to original labels.")
+            preds = le.inverse_transform(preds)
+
         pred_df = pd.DataFrame({
             "IsolateID": X.index,
             "Prediction": preds
         })
+
+        # Add class probabilities if the model supports predict_proba().
+        if probas is not None:
+            logging.info("Adding class probability columns to prediction output.")
+
+            model_step = (
+                pipeline.named_steps["model"]
+                if hasattr(pipeline, "named_steps") and "model" in pipeline.named_steps
+                else pipeline
+            )
+
+            if le is not None and hasattr(le, "classes_"):
+                proba_cols = [str(c) for c in le.classes_]
+            elif hasattr(model_step, "classes_"):
+                proba_cols = [str(c) for c in model_step.classes_]
+            else:
+                proba_cols = [f"class_{i}" for i in range(probas.shape[1])]
+
+            if len(proba_cols) != probas.shape[1]:
+                raise ValueError(
+                    f"Number of probability columns ({len(proba_cols)}) does not match "
+                    f"predict_proba output shape ({probas.shape[1]})."
+                )
+
+            proba_df = pd.DataFrame(
+                probas,
+                index=X.index,
+                columns=proba_cols
+            )
+
+            pred_df = pd.concat(
+                [pred_df.set_index("IsolateID"), proba_df],
+                axis=1
+            ).reset_index()
+
+        else:
+            logging.warning(
+                "Model does not expose predict_proba(); writing predictions only."
+            )
+
         output_file = output_dir / f"{name}_predictions.tsv"
         output_file.parent.mkdir(parents=True, exist_ok=True)
         pred_df.to_csv(output_file, sep="\t", index=False)
