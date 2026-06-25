@@ -30,7 +30,8 @@ setup(
 	    "py-muvr==1.0.1",
 	    "optuna==4.5.0",
 	    "tqdm==4.67.1",
-	    "psutil==7.1.0"
+	    "psutil==7.1.0",
+	    "boruta==0.4.3"
         ],
     entry_points={
         "console_scripts": [
