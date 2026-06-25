@@ -3,6 +3,8 @@ import sys
 import argparse
 import pandas as pd
 from pathlib import Path
+import logging
+from datetime import datetime
 
 """
 03_extract_features.py
@@ -71,6 +73,28 @@ def parse_arguments():
 
 
 #helper functions
+def setup_logging(output_dir: str, name: str) -> str:
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    log_file = Path(output_dir) / f"{name}_extract_{timestamp}.log"
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file, mode="w"),
+            logging.StreamHandler(sys.stdout),
+        ],
+        force=True,
+    )
+
+    return log_file
+
+
 def _header_columns(path: Path) -> list[str]:
     """Read only the first line to get the complete header."""
     with path.open() as fh:
@@ -101,8 +125,12 @@ def extract_selected_columns(chisq_path: Path,
                          f"{chisq_path.name}")
 
     if missing:
-        print(f"[WARN] {len(missing)} selected features "
-              f"not found in full matrix (showing first 5): {missing[:5]}")
+        logging.warning(
+            "%d selected features not found in full matrix "
+            "(showing first 5): %s",
+            len(missing),
+            missing[:5]
+        )
 
     # ── read: homogeneous int list → pandas is happy
     df = pd.read_csv(
@@ -156,11 +184,22 @@ def load_split_metadata(meta_path, label_col, group_col=None):
     meta = pd.read_csv(meta_path, sep='\t', index_col=0)
     meta.index = meta.index.astype(str).str.strip()
     dupes = meta.index[meta.index.duplicated()]
-    print(len(dupes), "duplicate sample IDs:", dupes[:10])
-    #missing = [col for col in (label_col, group_col) if col not in meta.columns]
-    #if missing:
-    #    raise SystemExit(f"Error: columns {missing} not found in metadata file {meta_path}")
-    #return meta[label_col], meta[group_col]
+    unique_dupes = dupes.unique()
+
+    if len(dupes) > 0:
+        logging.error(
+            "%d duplicate rows involving %d sample IDs: %s",
+            len(dupes),
+            len(unique_dupes),
+            list(unique_dupes[:10])
+        )
+
+        raise ValueError(
+            f"{len(unique_dupes)} duplicate sample IDs found. "
+            "Sample IDs must be unique."
+        )
+
+
     if label_col is None:
         raise SystemExit("Error: --label is required when metadata is provided.")
     if label_col not in meta.columns:
@@ -171,7 +210,11 @@ def load_split_metadata(meta_path, label_col, group_col=None):
         if group_col in meta.columns:
             groups = meta[group_col]
         else:
-            print(f"[WARN] group column '{group_col}' not found in {meta_path}; proceeding without groups.")
+            logging.warning(
+                "Group column '%s' not found in %s; proceeding without groups.",
+                group_col,
+                meta_path
+            )
 
     return meta[label_col], groups
 
@@ -198,39 +241,57 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
     if groups is not None:
         parts.append(groups)
 
-    print(f"labels: {labels.shape[0]}")
-    print(f"features: {feats.shape[0]}")
+    logging.info("labels: %d", labels.shape[0])
+    logging.info("features: %d", feats.shape[0])
 
     df = pd.concat(parts, axis=1, join='inner')
 
-    print(f"after merge: {df.shape[0]}")
+    logging.info("after merge: %d", df.shape[0])
 
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     name = f"{base_name}_{suffix}.tsv"
     final_path = outdir / name
-    print(f"Saving {suffix} split to {final_path}")
+    logging.info(
+        "Saving %s split to %s",
+        suffix,
+        final_path
+    )
+
     df.to_csv(final_path, sep='\t')
 
 def main():
     args = parse_arguments()
 
+    log_file = setup_logging(args.output_dir, args.name)
+
+    logging.info("Writing extract log to %s", log_file)
+
     if not (args.train_metadata or args.test_metadata):
-        print("⚠️  No metadata provided — extracting features only (predict-only mode).")
+        logging.warning(
+            "No metadata provided — extracting features only (predict-only mode)."
+        )
     else:
         # Metadata provided => label must be provided and present in metadata
         if not args.label:
             raise SystemExit("Error: --label is required when --train_metadata/--test_metadata is provided.")
         # group_column may be None; that's OK
 
+    logging.info(
+        "Loading selected features from %s",
+        args.feature_file
+    )
 
-    print(f"Loading selected features from {args.feature_file}")
     features = load_selected(args.feature_file, args.label)
+    logging.info(
+        "Loaded %d selected features",
+        len(features)
+    )
 
 
     # Process train or/and test splits
     if args.train_metadata:
-        print("Processing train split...")
+        logging.info("Processing train split...")
         process_split(
             args.train_metadata,
             args.chisq_file,
@@ -242,10 +303,12 @@ def main():
             base_name=args.name
         )
     else:
-        print("No train_metadata given – skipping train feature table construction.")
+        logging.info(
+            "No train_metadata given – skipping train feature table construction."
+        )
 
     if args.test_metadata:
-        print("Processing test split...")
+        logging.info("Processing test split...")
         process_split(
             args.test_metadata,
             args.chisq_file,
@@ -257,7 +320,9 @@ def main():
             base_name=args.name
         )
     else:
-        print("No test_metadata given – skipping hold-out feature table.")
+        logging.info(
+            "No test_metadata given – skipping hold-out feature table."
+        )
 
     if not args.train_metadata and not args.test_metadata:
         # predict-only mode: extract and write features with no label/group
@@ -266,10 +331,13 @@ def main():
         outdir.mkdir(parents=True, exist_ok=True)
         final_path = outdir / f"{args.name}_test.tsv"
         feats.to_csv(final_path, sep="\t")
-        print(f"✅ Predict-only test table saved to {final_path}")
+        logging.info(
+            "Predict-only test table saved to %s",
+            final_path
+        )
 
 
-    print("Done.")
+    logging.info("Done.")
 
 
 if __name__ == "__main__":

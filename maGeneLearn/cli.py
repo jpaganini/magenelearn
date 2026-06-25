@@ -206,6 +206,8 @@ def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, stream: bool = False
     if dry:
         return
 
+    step_label = log.stem if log is not None else "unknown_step"
+
     if stream:
         # live stream to screen + save to log
         with open(log, "w") as lf:
@@ -219,15 +221,31 @@ def run(cmd: Sequence[str], *, cwd: Path | None, log: Path, stream: bool = False
                 click.echo(line, nl=False)
                 lf.write(line)
             ret = proc.wait()
+
         if ret != 0:
-            click.echo(f"Step failed – see log {log}", err=True)
+            click.echo(
+                f"Step '{step_label}' failed with exit code {ret}.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Working directory: {cwd}\n"
+                f"Log file: {log}",
+                err=True
+            )
             sys.exit(ret)
     else:
         res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
         log.write_text(res.stdout + res.stderr)
+
         if res.returncode != 0:
-            click.echo(res.stderr, err=True)
-            click.echo(f"Step failed – see log {log}", err=True)
+            if res.stderr:
+                click.echo(res.stderr, err=True)
+
+            click.echo(
+                f"Step '{step_label}' failed with exit code {res.returncode}.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Working directory: {cwd}\n"
+                f"Log file: {log}",
+                err=True
+            )
             sys.exit(res.returncode)
 
 # ---------------------------------------------------------------------------
@@ -786,44 +804,72 @@ def test(click_ctx: click.Context, *,
         run(cmd, cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
         ctx.feat_test = (d / f"{name}_test.tsv").resolve()
 
-        # ── 4. branch B – ready table supplied ---------------------------------
+    # ── 4. branch B – ready table supplied ---------------------------------
     else:
         ctx.feat_test = ready_features.resolve()
 
-        # ── 5. evaluate --------------------------------------------------------
-
+    # ── 5. infer model metadata and compose clean output name ---------------
     model_stem = ctx.model_file.stem
     parts = model_stem.split("_")
 
-    # Defaults
-    ctx.model = "NA"
-    ctx.lr_penalty = "none"
-    ctx.upsample = "none"
+    valid_models = {"RFC", "XGBC", "SVM", "LR"}
+    valid_samplings = {"none", "random", "smote", "enn", "smoteenn", "random_under"}
+    valid_penalties = {"l1", "l2", "elasticnet"}
 
-    # Parse from the right according to your scheme:
-    # ... <MODEL> <UPSAMPLE>                (non-LR)
-    # ... <MODEL> <LRPENALTY> <UPSAMPLE>    (LR)
-    if len(parts) >= 2:
-        last = parts[-1]           # always UPSAMPLE
-        second_last = parts[-2]    # MODEL (non-LR) OR LRPENALTY (LR)
+    # Find the right-most model token in the filename.
+    # This is robust to dataset/method names containing underscores.
+    model_positions = [i for i, token in enumerate(parts) if token in valid_models]
 
-    # Check if it's LR by seeing if there's a penalty token
-        if last in {"l1", "l2", "elasticnet"} and len(parts) >= 3:
-            # LR case: [..., MODEL, LRPENALTY, UPSAMPLE]
-            ctx.model = parts[-3]
-            ctx.lr_penalty = last
-            ctx.upsample = second_last
-        else:
-            # Non-LR case: [..., MODEL, UPSAMPLE]
-            ctx.model = second_last
-            ctx.upsample = last
-            ctx.lr_penalty = "none"
+    if not model_positions:
+        raise click.UsageError(
+            f"Could not parse model filename: {model_stem}. "
+            f"Expected one of these model tokens: {sorted(valid_models)}"
+        )
 
-        # Now compose the evaluation name by fusing the user-provided --name
+    model_idx = model_positions[-1]
+    ctx.model = parts[model_idx]
+
+    suffix_tokens = parts[model_idx + 1:]
+
     if ctx.model == "LR":
-        ctx.name = f"{name}_{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}".replace("__", "_")
+        if len(suffix_tokens) < 2:
+            raise click.UsageError(
+                f"Could not parse LR model filename: {model_stem}. "
+                "Expected pattern: ..._LR_<sampling>_<penalty>"
+            )
+
+        if suffix_tokens[-1] not in valid_penalties:
+            raise click.UsageError(
+                f"Could not parse LR penalty from filename: {model_stem}. "
+                f"Expected one of: {sorted(valid_penalties)}"
+            )
+
+        ctx.lr_penalty = suffix_tokens[-1]
+        ctx.upsample = "_".join(suffix_tokens[:-1])
+
     else:
-        ctx.name = f"{name}_{ctx.model}_{ctx.upsample}".replace("__", "_")
+        ctx.lr_penalty = "none"
+        ctx.upsample = "_".join(suffix_tokens)
+
+    if ctx.upsample not in valid_samplings:
+        raise click.UsageError(
+            f"Could not parse sampling method from filename: {model_stem}. "
+            f"Parsed sampling='{ctx.upsample}', expected one of: {sorted(valid_samplings)}"
+        )
+
+    # Compose output name without duplicating model/sampling tokens.
+    # If --name already contains the full model suffix, keep it as-is.
+    if ctx.model == "LR":
+        expected_suffix = f"{ctx.model}_{ctx.upsample}_{ctx.lr_penalty}"
+    else:
+        expected_suffix = f"{ctx.model}_{ctx.upsample}"
+
+    if name.endswith(expected_suffix):
+        ctx.name = name
+    else:
+        ctx.name = f"{name}_{expected_suffix}".replace("__", "_")
+
+
 
     click.echo(
         f"Composed evaluation name ➜ {ctx.name} "
