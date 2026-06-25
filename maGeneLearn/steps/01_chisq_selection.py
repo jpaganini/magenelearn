@@ -42,6 +42,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import psutil, threading, time, sys
 from datetime import datetime
+import logging
 
 # Internal tunables (no new CLI flags)
 _BLOCK_COLS = 5000   # feature columns per read block
