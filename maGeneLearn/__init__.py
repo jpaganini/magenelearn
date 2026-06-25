@@ -1,6 +1,6 @@
 # maGeneLearn/__init__.py
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # If you want to allow `import maGeneLearn; maGeneLearn.cli`:
 from .cli import cli  
