@@ -282,7 +282,6 @@ if __name__ == "__main__":
         fill_memmap_columns_from_blocks(mm, args.features1, id_col_name, row_index, topk_in_order, _BLOCK_COLS)
         del mm
         write_memmap_matrix_as_tsv(out_topk, mm_path, (len(row_index), len(topk_in_order)), row_index, topk_in_order, row_chunk=_ROW_CHUNK)
-        write_memmap_matrix_as_tsv(out_topk, mm_path, (len(row_index), len(topk_in_order)), row_index, topk_in_order, row_chunk=_ROW_CHUNK)
         try: os.remove(mm_path)
         except Exception: pass
     else:
