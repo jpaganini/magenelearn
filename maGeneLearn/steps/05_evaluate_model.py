@@ -247,6 +247,7 @@ def run_evaluation(
     scoring: str,
     predict_only: bool = False,
     skip_svm_importance: bool = False,
+    skip_shap: bool = False
 ) -> None:
     """Grouped‑CV evaluation: predictions, metrics, feature importances, SHAP."""
 
@@ -419,6 +420,10 @@ def run_evaluation(
     # containers for results
     oof_true, oof_pred, oof_proba = [], [], []
     feature_imps, shap_vals_all = [], []
+
+    # SHAP is optional. If it fails in any fold, evaluation should continue
+    # and all non-SHAP outputs should still be written.
+    shap_failed = False
 
     if no_cv:
         logging.info("Hold‑out mode (no CV)")
@@ -600,94 +605,129 @@ def run_evaluation(
                 X_te = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
 
             # SHAP values only for tree-based models
-            if model_step.__class__.__name__.startswith("XGB") or hasattr(model_step, "feature_importances_"):
-                # --- Diagnostic: check model vs. data alignment ---
-                logging.info(
-                    "DEBUG SHAP | model: %s | X_te shape: %s | n_features_in_: %s",
-                    type(model_step).__name__,
-                    X_te.shape,
-                    getattr(model_step, "n_features_in_", "NA")
-                )
-
-                if hasattr(model_step, "feature_names_in_"):
-                    model_feats = list(model_step.feature_names_in_)
-                    diff1 = set(model_feats) - set(X_te.columns)
-                    diff2 = set(X_te.columns) - set(model_feats)
+            if (
+                    not skip_shap
+                    and not shap_failed
+                    and (
+                    model_step.__class__.__name__.startswith("XGB")
+                    or hasattr(model_step, "feature_importances_")
+            )
+            ):
+                try:
+                    # --- Diagnostic: check model vs. data alignment ---
                     logging.info(
-                        "DEBUG SHAP | missing_in_X_te=%d | extra_in_X_te=%d",
-                        len(diff1),
-                        len(diff2)
+                        "DEBUG SHAP | model: %s | X_te shape: %s | n_features_in_: %s",
+                        type(model_step).__name__,
+                        X_te.shape,
+                        getattr(model_step, "n_features_in_", "NA")
                     )
-                    if diff1:
-                        logging.warning("Features missing in X_te: %s", list(diff1)[:10])
-                    if diff2:
-                        logging.warning("Extra features in X_te: %s", list(diff2)[:10])
-                # --- End of diagnostic block ---
-                explainer = shap.TreeExplainer(model_step)
-                shap_vals = explainer.shap_values(X_te)
 
-                # Align SHAP outputs to the original class labels.
-                # This is needed because fitted models may store classes as
-                # encoded integers, while class_names contains original labels.
-                fold_classes_2 = np.asarray(model_step.classes_)
-
-                if (
-                    le is not None
-                    and hasattr(le, "classes_")
-                    and np.issubdtype(fold_classes_2.dtype, np.integer)
-                ):
-                    fold_classes_2 = le.inverse_transform(fold_classes_2.astype(int))
-
-                fold_classes_2 = [str(c) for c in fold_classes_2]
-                target_classes = [str(c) for c in class_names]
-
-                shap_dict = {}
-
-                if isinstance(shap_vals, list):
-                    # Common multiclass format: one SHAP matrix per fitted class
-                    for i, cls in enumerate(fold_classes_2):
-                        if i < len(shap_vals):
-                            shap_dict[cls] = shap_vals[i]
-
-                elif isinstance(shap_vals, np.ndarray) and shap_vals.ndim == 3:
-                    # Some SHAP versions return a 3D array:
-                    # either (n_samples, n_features, n_classes)
-                    # or occasionally (n_classes, n_samples, n_features).
-                    if shap_vals.shape[2] == len(fold_classes_2):
-                        for i, cls in enumerate(fold_classes_2):
-                            shap_dict[cls] = shap_vals[:, :, i]
-
-                    elif shap_vals.shape[0] == len(fold_classes_2):
-                        for i, cls in enumerate(fold_classes_2):
-                            shap_dict[cls] = shap_vals[i, :, :]
-
-                    else:
-                        logging.warning(
-                            "Could not confidently align 3D SHAP values. "
-                            "SHAP shape=%s | fitted classes=%s",
-                            shap_vals.shape,
-                            fold_classes_2,
+                    if hasattr(model_step, "feature_names_in_"):
+                        model_feats = list(model_step.feature_names_in_)
+                        diff1 = set(model_feats) - set(X_te.columns)
+                        diff2 = set(X_te.columns) - set(model_feats)
+                        logging.info(
+                            "DEBUG SHAP | missing_in_X_te=%d | extra_in_X_te=%d",
+                            len(diff1),
+                            len(diff2)
                         )
+                        if diff1:
+                            logging.warning("Features missing in X_te: %s", list(diff1)[:10])
+                        if diff2:
+                            logging.warning("Extra features in X_te: %s", list(diff2)[:10])
+                    # --- End of diagnostic block ---
 
-                else:
-                    # Binary/single-output case. The returned matrix corresponds
-                    # to one model output, so attach it to the last fitted class.
-                    # Missing classes below will receive zero SHAP values.
-                    target_cls = fold_classes_2[-1] if fold_classes_2 else target_classes[-1]
-                    shap_dict[target_cls] = shap_vals
+                    #Shap computation
+                    explainer = shap.TreeExplainer(model_step)
+                    shap_vals = explainer.shap_values(X_te)
 
-                aligned = []
-                for cls in target_classes:
-                    if cls in shap_dict:
-                        aligned.append(shap_dict[cls])
+                    # Align SHAP outputs to the original class labels.
+                    # This is needed because fitted models may store classes as
+                    # encoded integers, while class_names contains original labels.
+                    fold_classes_2 = np.asarray(model_step.classes_)
+
+                    if (
+                        le is not None
+                        and hasattr(le, "classes_")
+                        and np.issubdtype(fold_classes_2.dtype, np.integer)
+                    ):
+                        fold_classes_2 = le.inverse_transform(fold_classes_2.astype(int))
+
+                    fold_classes_2 = [str(c) for c in fold_classes_2]
+                    target_classes = [str(c) for c in class_names]
+
+                    shap_dict = {}
+
+                    if isinstance(shap_vals, list):
+                        # Common multiclass format: one SHAP matrix per fitted class
+                        for i, cls in enumerate(fold_classes_2):
+                            if i < len(shap_vals):
+                                shap_dict[cls] = shap_vals[i]
+
+                    elif isinstance(shap_vals, np.ndarray) and shap_vals.ndim == 3:
+                        # Some SHAP versions return a 3D array:
+                        # either (n_samples, n_features, n_classes)
+                        # or occasionally (n_classes, n_samples, n_features).
+                        if shap_vals.shape[2] == len(fold_classes_2):
+                            for i, cls in enumerate(fold_classes_2):
+                                shap_dict[cls] = shap_vals[:, :, i]
+
+                        elif shap_vals.shape[0] == len(fold_classes_2):
+                            for i, cls in enumerate(fold_classes_2):
+                                shap_dict[cls] = shap_vals[i, :, :]
+
+                        else:
+                            raise ValueError(
+                                "Could not confidently align 3D SHAP values. "
+                                f"SHAP shape={shap_vals.shape} | "
+                                f"fitted classes={fold_classes_2}"
+                            )
+
                     else:
-                        # Create zero SHAP values for classes absent from this fold/model.
-                        aligned.append(np.zeros((X_te.shape[0], X_te.shape[1])))
+                        # Binary/single-output case. The returned matrix corresponds
+                        # to one model output, so attach it to the last fitted class.
+                        # Missing classes below will receive zero SHAP values.
+                        target_cls = fold_classes_2[-1] if fold_classes_2 else target_classes[-1]
+                        shap_dict[target_cls] = shap_vals
 
-                shap_vals_all.append(aligned)
+                    aligned = []
+
+                    for cls in target_classes:
+                        if cls in shap_dict:
+                            aligned.append(shap_dict[cls])
+                        else:
+                            # Create zero SHAP values for classes absent from this fold/model.
+                            aligned.append(np.zeros((X_te.shape[0], X_te.shape[1])))
+
+                    shap_vals_all.append(aligned)
+
+                except Exception:
+                    logging.exception(
+                        "SHAP failed in fold %d/%d. "
+                        "SHAP outputs will be skipped, but model evaluation "
+                        "will continue.",
+                        fold,
+                        n_splits,
+                    )
+
+                    # Do not retain partial SHAP results from earlier folds.
+                    shap_failed = True
+                    shap_vals_all.clear()
+
 
             elif isinstance(model_step, LogisticRegression):
                 logging.info("Skipping SHAP: Logistic Regression not supported (use coefficients instead).")
+
+            elif shap_failed:
+                logging.info(
+                    "Skipping SHAP in fold %d because SHAP failed "
+                    "in an earlier fold.",
+                    fold,
+                )
+
+            elif skip_shap:
+                logging.info("Skipping SHAP because --skip-shap was set.")
+
             else:
                 logging.info("Skipping SHAP: model type not supported (%s)", type(model_step))
 
@@ -780,17 +820,8 @@ def run_evaluation(
                 fh.write(f"{feature}\n")
         logging.info("Written FASTA of features ➜ %s", fasta_path)
 
- #   combine SHAP arrays across folds
-    shap_stack = None
-    if shap_vals_all:
-        shap_stack = (
-            [np.concatenate([fold[c] for fold in shap_vals_all], axis=0) for c in range(len(class_names))]
-            if isinstance(shap_vals_all[0], list)
-            else np.concatenate(shap_vals_all, axis=0)
-    )
 
-
-    # 5️⃣  Write artefacts ------------------------------------------------------
+    # 5️⃣  Write core results ------------------------------------------------------
         # Prepare files dict for downstream references
     files = {
         "predictions_probabilities": output_dir / f"{name}_predictions_probabilities.tsv",
@@ -812,20 +843,6 @@ def run_evaluation(
     cm_df.to_csv(files["conf_matrix"], sep="\t")
     if not fi_df.empty:
         fi_df.to_csv(files["feat_importances"], sep="\t")
-    if shap_stack is not None:
-        np.save(files["shap_values"], shap_stack)
-        # Save per-class SHAP values as TSV files
-        if isinstance(shap_stack, list):
-            # Multiclass: one array per class
-            for idx, cls in enumerate(class_names):
-                df_shap = pd.DataFrame(
-                    shap_stack[idx], index=proba_df.index, columns=X.columns)
-                df_shap.to_csv(output_dir / f"{name}_{cls}_shap_values.tsv", sep="\t")
-        else:
-            # Binary (single 2D array): save under both class names
-            for cls in class_names:
-                df_shap = pd.DataFrame(shap_stack, index=proba_df.index, columns=X.columns)
-                df_shap.to_csv(output_dir / f"{name}_{cls}_shap_values.tsv", sep="\t")
 
 
     # 6️⃣  Diagnostic plots -----------------------------------------------------
@@ -837,19 +854,68 @@ def run_evaluation(
     plt.savefig(output_dir / f"{name}_confusion_matrix.png", dpi=300)
     plt.close()
 
-    # SHAP summary beeswarm
-    if shap_stack is not None:
-        for idx, cls in enumerate(class_names):
-            shap.summary_plot(
-                shap_stack[idx],  # SHAP values for this class
-                X.loc[proba_df.index],
-                feature_names=X.columns,
-                show=False,
-            )
-            plt.savefig(output_dir / f"{name}_shap_summary_{cls}.png", dpi=300)
-            plt.close()
+    #Optional SHAP outputs
+    #   combine SHAP arrays across folds
+    shap_stack = None
 
-    logging.info("All outputs written to %s", output_dir)
+    if shap_failed:
+        logging.warning(
+            "SHAP failed during cross-validation. "
+            "All SHAP outputs will be skipped."
+        )
+
+    elif shap_vals_all:
+
+        try:
+            logging.info("Combining SHAP values across CV folds.")
+            shap_stack = (
+                [np.concatenate([fold[c] for fold in shap_vals_all], axis=0) for c in range(len(class_names))]
+                if isinstance(shap_vals_all[0], list)
+                else np.concatenate(shap_vals_all, axis=0)
+            )
+
+            # Save raw SHAP values
+            np.save(files["shap_values"], shap_stack)
+
+            # Save per-class SHAP values as TSV files
+            if isinstance(shap_stack, list):
+                # Multiclass: one array per class
+                for idx, cls in enumerate(class_names):
+                    df_shap = pd.DataFrame(
+                        shap_stack[idx], index=proba_df.index, columns=X.columns)
+                    df_shap.to_csv(output_dir / f"{name}_{cls}_shap_values.tsv", sep="\t")
+            else:
+                # Binary (single 2D array): save under both class names
+                for cls in class_names:
+                    df_shap = pd.DataFrame(shap_stack, index=proba_df.index, columns=X.columns)
+                    df_shap.to_csv(output_dir / f"{name}_{cls}_shap_values.tsv", sep="\t")
+
+            # SHAP summary beeswarm
+            if isinstance(shap_stack, list):
+                for idx, cls in enumerate(class_names):
+                    shap.summary_plot(
+                        shap_stack[idx],  # SHAP values for this class
+                        X.loc[proba_df.index],
+                        feature_names=X.columns,
+                        show=False,
+                    )
+                    plt.savefig(output_dir / f"{name}_shap_summary_{cls}.png", dpi=300)
+                    plt.close()
+
+            logging.info("All outputs written to %s", output_dir)
+
+        except Exception:
+            logging.exception(
+                "SHAP post-processing failed. "
+                "Core evaluation outputs were already written and "
+                "will be preserved."
+            )
+
+    else:
+        logging.info("No SHAP values available; skipping SHAP outputs.")
+
+    logging.info("All core evaluation outputs written to %s", output_dir)
+
 
 # ╭──────────────────────────────────────────────────────────────────────────╮
 # │                                 CLI                                    │
@@ -871,6 +937,7 @@ def parse_args():
     p.add_argument("--predict_only", action="store_true",help="Only output predictions without evaluating performance.")
     p.add_argument("--scoring",  type=str,help="Scoring parameter for best model")
     p.add_argument("--skip-svm-importance", action="store_true", help="Skip permutation importance calculation for SVM models.")
+    p.add_argument("--skip-shap", action="store_true", help="Skip SHAP value computation.")
     return p.parse_args()
 
 
@@ -899,6 +966,7 @@ def main():
             predict_only=args.predict_only,
             scoring=args.scoring,
             skip_svm_importance=args.skip_svm_importance,
+            skip_shap=args.skip_shap,
         )
     except Exception:
         logging.exception("Evaluation failed")
