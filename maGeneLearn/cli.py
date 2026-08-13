@@ -174,6 +174,8 @@ class Context:
     muvr_n_repetitions: int = 10
     muvr_n_outer: int = 5
     muvr_n_inner: int = 4
+    skip_shap: bool = False
+    skip_svm_importance: bool = False
 
 
     # artefacts populated as we go
@@ -436,7 +438,7 @@ def evaluate_train(ctx: Context) -> None:
     else:
         eval_name = f"{ctx.name}_{ctx.model}_{ctx.upsample}_train"
 
-    run([
+    cmd = [
         sys.executable, str(script),
         "--model", str(ctx.model_file),
         "--features", str(ctx.feat_train),
@@ -446,10 +448,25 @@ def evaluate_train(ctx: Context) -> None:
         "--label", ctx.label,
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring,
-    ], cwd=d, log=d / "eval_train.log", dry=ctx.dry_run, stream=True)
+
+    ]
+
+    if ctx.skip_shap:
+        cmd.append("--skip-shap")
+
+    if ctx.skip_svm_importance:
+        cmd.append("--skip-svm-importance")
+
+    run(
+        cmd,
+        cwd=d,
+        log=d / "eval_train.log",
+        dry=ctx.dry_run,
+        stream=True
+    )
 
 
-def evaluate_holdout(ctx: Context, skip_svm_importance: bool = False) -> None:
+def evaluate_holdout(ctx: Context) -> None:
     if not ctx.feat_test:
         return  # nothing to do
     d = ctx.step_dir(7, "test_eval")
@@ -467,8 +484,6 @@ def evaluate_holdout(ctx: Context, skip_svm_importance: bool = False) -> None:
         "--group_column", ctx.group_col,
         "--scoring", ctx.scoring
     ]
-    if skip_svm_importance:
-        cmd.append("--skip-svm-importance")
     run(cmd, cwd=d, log=d / "eval_test.log", dry=ctx.dry_run, stream=True)
 
 # ---------------------------------------------------------------------------
@@ -528,6 +543,8 @@ def cli(ctx: click.Context, dry_run: bool) -> None:
 @click.option("--boruta-perc", "boruta_perc", type=click.IntRange(1, 100), default=100, show_default=True, help="Boruta percentile for shadow feature comparison (default: 100)")
 @click.option("--boruta-alpha", "boruta_alpha", type=float, default=0.05, show_default=True, help="Boruta significance threshold (default: 0.05)")
 @click.option("--boruta-max-iter", "boruta_max_iter", type=int, default=100, show_default=True, help="Maximum number of Boruta iterations performed (default: 100)")
+@click.option("--skip-shap", is_flag=True, help="Skip SHAP computation during training-set CV evaluation.")
+@click.option("--skip-svm-importance", is_flag=True, help="Skip permutation importance for SVM models.")
 
 @click.pass_context
 
@@ -555,6 +572,9 @@ def train(click_ctx: click.Context, *,
           boruta_alpha: float,
           boruta_max_iter: int,
           k:            int,
+          skip_shap: bool,
+          skip_svm_importance: bool,
+
           # core settings
           name:         str,
           model:        str,
@@ -630,7 +650,9 @@ def train(click_ctx: click.Context, *,
         boruta_max_iter=boruta_max_iter,
         muvr_n_repetitions=muvr_n_repetitions,
         muvr_n_outer=muvr_n_outer,
-        muvr_n_inner=muvr_n_inner
+        muvr_n_inner=muvr_n_inner,
+        skip_shap=skip_shap,
+        skip_svm_importance=skip_svm_importance
     )
 
     # -------------------------------------------- ingest pre-existing artefacts
@@ -728,7 +750,6 @@ def train(click_ctx: click.Context, *,
 @click.option("--predict-only", is_flag=True, help="Only output predictions without computing performance metrics.")
 @click.option("--scoring", default="balanced_accuracy", show_default=True, type=click.Choice(["accuracy", "balanced_accuracy", "f1", "f1_macro", "f1_micro", "precision", "recall", "roc_auc"]),
               help="Metric used to pick the best hyper-parameters in 04_train_model.py")
-@click.option("--skip-svm-importance", is_flag=True, help="Skip permutation importance for SVM models.")
 @click.pass_context
 
 def test(click_ctx: click.Context, *,
@@ -742,8 +763,7 @@ def test(click_ctx: click.Context, *,
          output_dir: Path | None,
          feature_file: Path | None,
          test_metadata : Path | None,
-         predict_only: bool,
-         skip_svm_importance: bool) -> None:
+         predict_only: bool) -> None:
 
     #1. Sanity check
     if (full_features is None) == (ready_features is None):
@@ -889,12 +909,10 @@ def test(click_ctx: click.Context, *,
             "--scoring", ctx.scoring,
             "--name", ctx.name + "_test",
         ]
-        if skip_svm_importance:
-            cmd.append("--skip-svm-importance")
 
         run(cmd, cwd=d, log=d / "predict.log", dry=ctx.dry_run)
     else:
-        evaluate_holdout(ctx, skip_svm_importance=skip_svm_importance)
+        evaluate_holdout(ctx)
 
     #evaluate_holdout(ctx)
     click.echo("\n✅ Test evaluation complete.")
