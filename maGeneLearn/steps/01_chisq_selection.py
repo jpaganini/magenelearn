@@ -45,7 +45,6 @@ from datetime import datetime
 import logging
 
 # Internal tunables (no new CLI flags)
-_BLOCK_COLS = 5000   # feature columns per read block
 _ROW_CHUNK  = 1000   # rows per write chunk when emitting TSVs
 
 
@@ -65,6 +64,12 @@ def get_opts():
                         help='Number of top features to select (default: 100000)')
     parser.add_argument('--n_jobs', type=int, default=-1,
                         help='Number of parallel jobs to run (default: -1, use all available CPUs)')
+    parser.add_argument(
+        "--block-cols",
+        type=int,
+        default=50000,
+        help="Number of feature columns read per block"
+    )
     return parser.parse_args()
 
 
@@ -246,8 +251,8 @@ if __name__ == "__main__":
     results = Parallel(n_jobs=args.n_jobs, verbose=0)(
         delayed(chi2_block)(block, args.features1, id_col_name, row_index, y)
         for block in tqdm(
-            iter_column_blocks(keep_cols, _BLOCK_COLS),
-            total=len(keep_cols)//_BLOCK_COLS + 1,
+            iter_column_blocks(keep_cols, args.block_cols),
+            total=len(keep_cols)//args.block_cols + 1,
             desc="Chi² blocks"
         )
     )
@@ -270,8 +275,15 @@ if __name__ == "__main__":
                 if score > topk_heap[0][0]:
                     heappop(topk_heap); heappush(topk_heap, (score, feat))
 
-    topk_in_order = [c for c in keep_cols if c in {feat for _, feat in topk_heap}][:args.k]
-    sig_in_order  = significant_cols_in_order
+    topk_set = {feat for _, feat in topk_heap}
+    logging.info("Identifying top %d features in original column order", args.k)
+
+    topk_in_order = [
+        c for c in keep_cols
+        if c in topk_set
+    ][:args.k]
+
+    logging.info("Top-k feature list ready: %d features", len(topk_in_order))
 
     # ---------------- Pass B: build & write Top-K matrix ----------------
     out_topk = os.path.join(args.output_dir, f"{args.name}_top{args.k}_features.tsv")
@@ -279,7 +291,7 @@ if __name__ == "__main__":
         with tempfile.NamedTemporaryFile(delete=False, dir=args.output_dir, prefix=f"{args.name}_topk_", suffix=".mm") as tmpf:
             mm_path = tmpf.name
         mm = build_memmap(mm_path, shape=(len(row_index), len(topk_in_order)))
-        fill_memmap_columns_from_blocks(mm, args.features1, id_col_name, row_index, topk_in_order, _BLOCK_COLS)
+        fill_memmap_columns_from_blocks(mm, args.features1, id_col_name, row_index, topk_in_order, args.block_cols)
         del mm
         write_memmap_matrix_as_tsv(out_topk, mm_path, (len(row_index), len(topk_in_order)), row_index, topk_in_order, row_chunk=_ROW_CHUNK)
         try: os.remove(mm_path)
@@ -288,20 +300,6 @@ if __name__ == "__main__":
         # Write an empty header-only file (consistent with prior behavior when selection yields 0 cols)
         with open(out_topk, "w") as f:
             f.write("\t\n")
-
-    # ---------------- Pass B: build & write p≤0.05 matrix ----------------
-    if len(sig_in_order) > 0:
-        out_pval_mat = os.path.join(args.output_dir, f"{args.name}_pvalues_features.tsv")
-        with tempfile.NamedTemporaryFile(delete=False, dir=args.output_dir, prefix=f"{args.name}_p05_", suffix=".mm") as tmpf:
-            mm_path2 = tmpf.name
-        mm2 = build_memmap(mm_path2, shape=(len(row_index), len(sig_in_order)))
-        fill_memmap_columns_from_blocks(mm2, args.features1, id_col_name, row_index, sig_in_order, _BLOCK_COLS)
-        del mm2
-        write_memmap_matrix_as_tsv(out_pval_mat, mm_path2, (len(row_index), len(sig_in_order)), row_index, sig_in_order, row_chunk=_ROW_CHUNK)
-        try: os.remove(mm_path2)
-        except Exception: pass
-    else:
-        logging.info("No features with p <= 0.05 found; skipping p-value feature matrix.")
 
     # Logs
     logging.info("Original feature count after header cleanup: %d", len(keep_cols))
