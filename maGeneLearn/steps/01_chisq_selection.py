@@ -21,11 +21,7 @@ Parameters:
 Outputs (same filenames/formats as before):
     <name>_top{k}_features.tsv    Top k features (isolates × selected features; dense TSV).
     <name>_pvalues.tsv            2 columns: feature, p_value (all tested features).
-    <name>_pvalues_features.tsv   Dense TSV with features passing p ≤ 0.05 (isolates × features).
 
-Notes:
-    - Removed --features2 (and all merge logic).
-    - Removed any length-based column filtering entirely.
 """
 
 import os
@@ -100,9 +96,22 @@ def setup_logging(output_dir: str, name: str) -> str:
     return log_file
 
 def read_meta(meta_file: str, label_col: str) -> pd.DataFrame:
-    df = pd.read_csv(meta_file, sep="\t", header=0, dtype=str, index_col=0)
+    df = pd.read_csv(
+        meta_file,
+        sep="\t",
+        header=0,
+        dtype=str,
+        index_col=0
+    )
+
+    if not df.index.is_unique:
+        raise ValueError("Duplicate sample IDs found in metadata file.")
+
     if label_col not in df.columns:
-        raise ValueError(f"Missing required column '{label_col}' in metadata file")
+        raise ValueError(
+            f"Missing required column '{label_col}' in metadata file"
+        )
+
     return df[[label_col]]
 
 def scan_header_and_rows(feature_file: str) -> Tuple[str, List[str], List[str]]:
@@ -122,7 +131,17 @@ def scan_header_and_rows(feature_file: str) -> Tuple[str, List[str], List[str]]:
     keep_cols = all_feature_cols
 
     # Row order from file
-    ids = pd.read_csv(feature_file, sep='\t', usecols=[id_col_name], dtype=str)[id_col_name].tolist()
+    ids = pd.read_csv(
+        feature_file,
+        sep="\t",
+        usecols=[id_col_name],
+        dtype=str
+    )[id_col_name].tolist()
+
+    if len(ids) != len(set(ids)):
+        raise ValueError(
+            "Duplicate sample IDs found in feature matrix."
+        )
     return id_col_name, keep_cols, ids
 
 def make_row_index(file_ids: List[str], meta_index: pd.Index) -> List[str]:
@@ -158,24 +177,13 @@ def chi2_block(block, feature_file, id_col_name, row_index, y):
     chi2_scores, p_values = chi2(X_block, y)
     return list(zip(block, p_values, chi2_scores))
 
-
-def write_pvalues_stream(out_path: str, pairs_iter: Iterable[Tuple[str, float]]):
-    with open(out_path, "w") as w:
-        w.write("feature\tp_value\n")
-        buf, n, flush_every = [], 0, 100000
-        for feature, pval in pairs_iter:
-            buf.append(f"{feature}\t{pval}\n")
-            n += 1
-            if n % flush_every == 0:
-                w.writelines(buf); buf.clear()
-        if buf:
-            w.writelines(buf)
-
 def build_memmap(path: str, shape: Tuple[int, int]) -> np.memmap:
-    mm = np.memmap(path, dtype='uint8', mode='w+', shape=shape)
-    mm[:] = 0
-    mm.flush()
-    return mm
+    return np.memmap(
+        path,
+        dtype="uint8",
+        mode="w+",
+        shape=shape
+    )
 
 def fill_memmap_columns_from_blocks(
     mm: np.memmap,
@@ -185,21 +193,38 @@ def fill_memmap_columns_from_blocks(
     selected_cols_in_order: List[str],
     block_size: int,
 ):
-    col_pos: Dict[str, int] = {c: i for i, c in enumerate(selected_cols_in_order)}
-    total_blocks = (len(selected_cols_in_order) + block_size - 1) // block_size
+    total_blocks = (
+        len(selected_cols_in_order) + block_size - 1
+    ) // block_size
+
+    offset = 0
+
     for block in tqdm(
         iter_column_blocks(selected_cols_in_order, block_size),
         total=total_blocks,
         desc="Building matrix"
     ):
         df = pd.read_csv(
-            feature_file, sep='\t', usecols=[id_col_name] + block,
-            dtype={id_col_name: str, **{c: 'Int16' for c in block}}
+            feature_file,
+            sep="\t",
+            usecols=[id_col_name] + block,
+            dtype={id_col_name: str, **{c: "Int16" for c in block}}
         ).set_index(id_col_name)
-        df = df.reindex(row_index).fillna(0)
-        arr = (df.to_numpy(copy=False) > 0).astype(np.uint8, copy=False)
-        for j, col in enumerate(block):
-            mm[:, col_pos[col]] = arr[:, j]
+
+        # Ensure both rows and feature columns are in exactly
+        # the expected order
+        df = df.reindex(index=row_index, columns=block).fillna(0)
+
+        arr = (df.to_numpy(copy=False) > 0).astype(
+            np.uint8,
+            copy=False
+        )
+
+        # Write the entire block to the memmap at once
+        end = offset + len(block)
+        mm[:, offset:end] = arr
+        offset = end
+
     mm.flush()
 
 def write_memmap_matrix_as_tsv(
@@ -237,8 +262,17 @@ if __name__ == "__main__":
         raise ValueError("No overlapping sample IDs between metadata and features file.")
 
     # Labels aligned to row order
-    y = meta_df.loc[row_index, args.label_col].values
-    y = LabelEncoder().fit_transform(y)
+    labels = meta_df.loc[row_index, args.label_col]
+
+    if labels.isna().any():
+        raise ValueError("Missing labels found among samples used for Chi².")
+
+    y = LabelEncoder().fit_transform(labels)
+
+    if np.unique(y).size < 2:
+        raise ValueError(
+            "Chi² feature selection requires at least two classes."
+        )
 
     # -------- Pass A: chi² scoring in blocks; parallel; progress bar; memory monitor --------
     logging.info("Scoring Chi² in blocks over %d features; rows=%d", len(keep_cols), len(row_index))
@@ -247,33 +281,52 @@ if __name__ == "__main__":
     # Start memory monitor in background
     threading.Thread(target=monitor_memory, daemon=True).start()
 
-    # Parallel execution of blocks
-    results = Parallel(n_jobs=args.n_jobs, verbose=0)(
-        delayed(chi2_block)(block, args.features1, id_col_name, row_index, y)
-        for block in tqdm(
-            iter_column_blocks(keep_cols, args.block_cols),
-            total=len(keep_cols)//args.block_cols + 1,
-            desc="Chi² blocks"
+    # Sequential block processing:
+    # read one block -> run Chi² -> move to next block
+    topk_heap = []
+
+    total_blocks = (
+                           len(keep_cols) + args.block_cols - 1
+                   ) // args.block_cols
+
+    parallel_results = Parallel(
+        n_jobs=args.n_jobs,
+        return_as="generator",
+    )(
+        delayed(chi2_block)(
+            block,
+            args.features1,
+            id_col_name,
+            row_index,
+            y
+        )
+        for block in iter_column_blocks(
+            keep_cols,
+            args.block_cols
         )
     )
 
-    # Flatten results
-    all_triplets = [triplet for block_results in results for triplet in block_results]
-
-    # Now stream p-values, keep top-k and p≤0.05
-    topk_heap = []
-    significant_cols_in_order = []
     with open(out_pvals, "w") as w:
         w.write("feature\tp_value\n")
-        for feat, pval, score in all_triplets:
-            w.write(f"{feat}\t{pval}\n")
-            if pval <= 0.05:
-                significant_cols_in_order.append(feat)
-            if len(topk_heap) < args.k:
-                heappush(topk_heap, (score, feat))
-            else:
-                if score > topk_heap[0][0]:
-                    heappop(topk_heap); heappush(topk_heap, (score, feat))
+
+        for block_results in tqdm(
+                parallel_results,
+                total=total_blocks,
+                desc="Chi² blocks"
+        ):
+            for feat, pval, score in block_results:
+                w.write(f"{feat}\t{pval}\n")
+
+                # Skip features for which Chi² is undefined
+                if not np.isfinite(score):
+                    continue
+
+                if len(topk_heap) < args.k:
+                    heappush(topk_heap, (score, feat))
+
+                elif score > topk_heap[0][0]:
+                    heappop(topk_heap)
+                    heappush(topk_heap, (score, feat))
 
     topk_set = {feat for _, feat in topk_heap}
     logging.info("Identifying top %d features in original column order", args.k)
@@ -303,13 +356,11 @@ if __name__ == "__main__":
 
     # Logs
     logging.info("Original feature count after header cleanup: %d", len(keep_cols))
-    logging.info("Reduced feature count top %d: %d", len(topk_in_order), len(topk_in_order))
+    logging.info(
+        "Reduced feature count top %d: %d",
+        args.k,
+        len(topk_in_order)
+    )
     logging.info("Saved top %d features to: %s", args.k, out_topk)
     logging.info("Saved p-values to: %s", out_pvals)
-
-    if len(sig_in_order) > 0:
-        logging.info(
-            "Saved p <= 0.05 features to: %s",
-            os.path.join(args.output_dir, f"{args.name}_pvalues_features.tsv")
-        )
 
