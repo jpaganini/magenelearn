@@ -777,24 +777,53 @@ def run_evaluation(
     logging.info("Computing additional metrics: MCC and AUPRC (per-class, macro, micro)")
 
     mcc = matthews_corrcoef(y_true_str, y_pred_str)
-    y_true_bin = label_binarize(y_true_str, classes=class_names)
-    y_score = proba_df[class_names].values
+    # ------------------------------------------------------------------
+    # Build one-vs-rest binary truth matrix explicitly.
+    #
+    # Do NOT use label_binarize() here because for binary classification
+    # sklearn returns only one column rather than one column per class.
+    #
+    # This produces:
+    #     n_samples x n_classes
+    # for both binary and multiclass problems.
+    # ------------------------------------------------------------------
+    class_names_str = [str(cls) for cls in class_names]
+    y_true_str_arr = np.asarray(y_true_str).astype(str)
+
+    y_true_bin = np.column_stack([
+        (y_true_str_arr == cls).astype(int)
+        for cls in class_names_str
+    ])
+
+    # Probability columns were already aligned to the global class order
+    # by build_probability_df().
+    y_score = proba_df[class_names_str].to_numpy()
+
     # --- Per-class AUPRC ---
     auprc_per_class = {
-        cls: average_precision_score(y_true_bin[:, i], y_score[:, i])
-        for i, cls in enumerate(class_names)
+        cls: average_precision_score(
+            y_true_bin[:, i],
+            y_score[:, i]
+        )
+        for i, cls in enumerate(class_names_str)
     }
 
     # --- Macro and micro AUPRC ---
     auprc_macro = np.mean(list(auprc_per_class.values()))
-    auprc_micro = average_precision_score(y_true_bin.ravel(), y_score.ravel())
+    auprc_micro = average_precision_score(
+        y_true_bin.ravel(),
+        y_score.ravel()
+    )
 
     # --- Assemble results ---
     auprc_mcc = {
         "MCC": round(mcc, 4),
         "Macro_AUPRC": round(auprc_macro, 4),
         "Micro_AUPRC": round(auprc_micro, 4),
-        **{f"AUPRC_{cls}": round(v, 4) for cls, v in auprc_per_class.items()},
+        **{
+            f"AUPRC_{cls}": round(v, 4)
+            for cls, v in auprc_per_class.items()
+        },
     }
 
     auprc_mcc_df = pd.DataFrame([auprc_mcc])
