@@ -242,8 +242,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         params = {
             "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1500, step=100),
             "model__max_depth": trial.suggest_int("model__max_depth", 10, 100, step=10),
-            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5]),
-            "model__probability": False,
+            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5])
         }
         if sampling == "none":
             params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
@@ -253,6 +252,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
             "model__C": trial.suggest_loguniform("model__C", 1e-3, 1e3),
             "model__kernel": trial.suggest_categorical("model__kernel", ["linear", "rbf"]),
             "model__gamma": trial.suggest_categorical("model__gamma", ["scale", "auto"]),
+            "model__probability": False,
         }
         if sampling == "none":
             params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
