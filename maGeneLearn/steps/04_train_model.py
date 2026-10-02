@@ -186,7 +186,7 @@ def prepare_pipeline(model_key, sampling, n_jobs, lr_penalty="l2",xgb_policy="de
             )
 
     elif model_key == "SVM":
-        estimator = SVC(random_state=RSEED, probability=True)  # probability=True for ROC/AUC support
+        estimator = SVC(random_state=RSEED, probability=False)  # probability=True for ROC/AUC support
 
 
     elif model_key == "LR":
@@ -242,7 +242,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
         params = {
             "model__n_estimators": trial.suggest_int("model__n_estimators", 200, 1500, step=100),
             "model__max_depth": trial.suggest_int("model__max_depth", 10, 100, step=10),
-            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5]),
+            "model__max_features": trial.suggest_categorical("model__max_features", ["log2", "sqrt", 0.2, 0.5])
         }
         if sampling == "none":
             params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
@@ -252,6 +252,7 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
             "model__C": trial.suggest_loguniform("model__C", 1e-3, 1e3),
             "model__kernel": trial.suggest_categorical("model__kernel", ["linear", "rbf"]),
             "model__gamma": trial.suggest_categorical("model__gamma", ["scale", "auto"]),
+            "model__probability": False,
         }
         if sampling == "none":
             params["model__class_weight"] = trial.suggest_categorical("model__class_weight", [None, "balanced"])
@@ -342,6 +343,9 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
 
     final_model = clone(pipeline)
     final_model.set_params(**best_params)
+
+    if model_key = "SVM":
+        final_model.set_params(model__probability=True)
 
     if model_key == "XGBC" and sampling == "none":
         sw = compute_sample_weight("balanced", y)
