@@ -186,39 +186,119 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
     return train_data_muvr
 
 def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, max_iter, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1, method='muvr', perc=100, alpha=0.05):
-
     target_col = outcome_col
-    train_data_muvr = train_data_muvr[[target_col]]
+    train_data_muvr = train_data_muvr[[target_col]].copy()
 
-    # Create an iterator for reading chisq_features line by line
-    reader_chisq = pd.read_csv(chisq_file, sep='\t', header=0, iterator=True, chunksize=1)
-
-    # Create a dataframe to hold the results
-    model_input = pd.DataFrame()
+    # Make sure metadata IDs are clean strings
+    train_data_muvr.index = (
+        train_data_muvr.index
+        .astype(str)
+        .str.strip()
+    )
 
     logging.info("Loading Chi² features")
-    # Get the first line of chisq_features
-    try:
-        chunk_chisq = next(reader_chisq)
-    except StopIteration:
-        chunk_chisq = pd.DataFrame()
 
-    while not chunk_chisq.empty:
-        # Set the index as the first column
-        chunk_chisq.set_index(chunk_chisq.columns[0], inplace=True)
-        chunk_chisq.index = chunk_chisq.index.astype(str).str.strip()
-        chunk_chisq = chunk_chisq.astype("int8")
+    # ------------------------------------------------------------------
+    # Read header first so that we can explicitly set only feature
+    # columns to int8 while leaving the sample-ID column as a string.
+    # ------------------------------------------------------------------
+    with open(chisq_file, "r") as f:
+        header = f.readline().rstrip("\n\r").split("\t")
 
-        # Merge the current line with isolate_metadata based on your desired criteria
-        merged_line = pd.merge(train_data_muvr, chunk_chisq, left_index=True, right_index=True, how='inner')
-        #print(merged_line)
-        model_input = pd.concat([model_input, merged_line], ignore_index=False)
+    if len(header) < 2:
+        raise ValueError(
+            "Chi² feature file must contain a sample-ID column "
+            "and at least one feature column."
+        )
 
-        #Get the following lines of the dataframe
-        try:
-            chunk_chisq = next(reader_chisq)
-        except StopIteration:
-            chunk_chisq = pd.DataFrame()
+    id_col = header[0]
+    feature_names = header[1:]
+
+    logging.info(
+        "Chi² matrix contains %d feature columns",
+        len(feature_names)
+    )
+
+    # Explicit int8 dtype prevents pandas from first constructing a much
+    # larger int64 matrix.
+    feature_dtypes = {
+        feature: "int8"
+        for feature in feature_names
+    }
+
+    chisq_df = pd.read_csv(
+        chisq_file,
+        sep="\t",
+        header=0,
+        index_col=0,
+        dtype=feature_dtypes,
+    )
+
+    chisq_df.index = (
+        chisq_df.index
+        .astype(str)
+        .str.strip()
+    )
+
+    if not chisq_df.index.is_unique:
+        raise ValueError(
+            "Duplicate sample IDs found in Chi² feature matrix."
+        )
+
+    logging.info(
+        "Chi² matrix loaded: %d isolates x %d features",
+        chisq_df.shape[0],
+        chisq_df.shape[1]
+    )
+
+    # ------------------------------------------------------------------
+    # Keep only samples present in BOTH metadata and Chi² matrix.
+    #
+    # Preserve the row order of the Chi² file, matching the behavior of
+    # the previous chunksize=1 implementation.
+    # ------------------------------------------------------------------
+    metadata_ids = set(train_data_muvr.index)
+
+    common_ids = [
+        sample_id
+        for sample_id in chisq_df.index
+        if sample_id in metadata_ids
+    ]
+
+    if len(common_ids) == 0:
+        raise ValueError(
+            "No overlapping sample IDs between training metadata "
+            "and Chi² feature matrix."
+        )
+
+    logging.info(
+        "Samples shared between metadata and Chi² matrix: %d",
+        len(common_ids)
+    )
+
+    # Align both objects once
+    train_labels = train_data_muvr.loc[common_ids]
+    chisq_df = chisq_df.loc[common_ids]
+
+    # One concatenation instead of one concatenation per isolate
+    model_input = pd.concat(
+        [
+            train_labels,
+            chisq_df
+        ],
+        axis=1
+    )
+
+    logging.info(
+        "Model input assembled: %d isolates x %d features",
+        model_input.shape[0],
+        model_input.shape[1] - 1
+    )
+
+    # We no longer need the standalone Chi² dataframe
+    del chisq_df
+    del train_labels
+    del feature_dtypes
 
     if remove_na:
         # check for NaNs in outcome
