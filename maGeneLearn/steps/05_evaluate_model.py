@@ -581,22 +581,19 @@ def run_evaluation(
                 if skip_svm_importance:
                     logging.info("Skipping permutation importance for SVM because --skip-svm-importance was set.")
                 else:
-                    logging.info("Computing permutation importance for SVM (subset of features).")
+                    logging.info("Computing permutation importance for SVM (all features).")
                     if hasattr(model_step, "feature_names_in_"):
                         X_te_aligned = X_te.reindex(columns=model_step.feature_names_in_, fill_value=0)
                     else:
                         X_te_aligned = X_te
-                    # Reduce to top-N features by univariate variance (or just first N cols)
-                    N_TOP = min(500, X_te.shape[1])  # cap at 500 features
-                    top_features = X_te.iloc[:, :N_TOP]  # simple subset; could replace with chi² selection
                     result = permutation_importance(
-                        clf, top_features, y_te,
+                        clf, X_te_aligned, y_te,
                         n_repeats=10,
                         random_state=RSEED,
                         n_jobs=-1,
                         scoring=scoring
                     )
-                    fi = pd.Series(result.importances_mean, index=top_features.columns)
+                    fi = pd.Series(result.importances_mean, index=X_te_aligned.columns)
                     feature_imps.append(fi)
             else:
                 logging.info("Skipping feature importance: model type not supported (%s)", type(model_step))
