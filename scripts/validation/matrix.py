@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -17,6 +18,155 @@ from common import ROOT, checksum, run_process
 MODELS = ["RFC", "XGBC", "SVM", "LR"]
 SELECTIONS = ["none", "muvr_RFC", "muvr_XGBC", "boruta_RFC", "boruta_XGBC"]
 SAMPLINGS = ["none", "random", "smote", "random_under", "enn", "smoteenn"]
+ENN_REJECTION_CASE = ("multiclass", "muvr_RFC", "XGBC", "enn")
+ENN_REJECTION_POLICY = "multiclass_muvr_RFC_XGBC_enn_class_loss_v1"
+
+
+def eligible_enn_rejection(result):
+    return (result.get("kind") == "model" and
+            tuple(result.get(k) for k in ("dataset", "selection", "model", "sampling")) == ENN_REJECTION_CASE)
+
+
+def unexpected_rejection_outputs(directory):
+    """A training rejection must not have reached evaluation or saved a model."""
+    forbidden = [p for p in (directory / "04_model").rglob("*")
+                 if p.is_file() and p.suffix != ".log"]
+    for name in ("06_train_eval", "07_test_eval", "external_inputs", "labelled_ready",
+                 "labelled_extraction", "predict_ready", "predict_extraction"):
+        forbidden.extend(p for p in (directory / name).rglob("*") if p.is_file())
+    forbidden.extend(directory.rglob("*.joblib"))
+    return sorted({str(p.relative_to(directory)) for p in forbidden})
+
+
+def expected_rejection_errors(result, check_files=True):
+    """Validate the narrow policy and its evidence; a claimed status is insufficient."""
+    try:
+        require(eligible_enn_rejection(result), "Rejection is outside the approved case")
+        evidence = result["rejection"]
+        require(evidence["policy"] == ENN_REJECTION_POLICY, "Unknown rejection policy")
+        require(evidence["exit_code"] == 1, "Expected a training exit code of one")
+        requested = evidence["requested_neighbors"]
+        require(type(requested) is int and 3 <= requested <= 10, "Invalid requested neighbour count")
+        require(type(evidence["trial"]) is int and 0 <= evidence["trial"] < 3, "Invalid optimization trial")
+        require(evidence["seed"] == 50 and evidence["cv_folds"] == 3, "Wrong CV configuration")
+        require(evidence["sampler"] == {"kind_sel": "mode", "sampling_strategy": "auto"}, "Wrong ENN configuration")
+        classes = evidence["classes"]
+        require(classes == ["Bovine", "Poultry", "Swine"], "Wrong class encoding")
+        ids, features = evidence["sample_ids"], evidence["features"]
+        require(bool(ids) and len(ids) == len(set(ids)), "Missing or duplicate sample IDs")
+        require(bool(features) and len(features) == len(set(features)), "Missing or duplicate predictors")
+        partitions = evidence["partitions"]
+        names = ["fold_1", "fold_2", "fold_3", "final_fit"]
+        require([p["name"] for p in partitions] == names, "Missing training partitions")
+        for part in partitions:
+            before = part["before"]
+            require(set(before) == set(classes) and all(type(n) is int and n > 0 for n in before.values()),
+                    "A class was already absent before sampling")
+            require(sum(before.values()) == len(part["sample_ids"]), "Partition sample counts differ")
+            require(len(part["sample_ids"]) == len(set(part["sample_ids"])) and
+                    set(part["sample_ids"]) <= set(ids), "Invalid partition sample IDs")
+            require(len(part["groups"]) == len(part["sample_ids"]), "Partition group alignment")
+            if part["name"] != "final_fit":
+                require(not set(part["groups"]) & set(part["validation_groups"]), "CV group leakage")
+                require(not set(part["sample_ids"]) & set(part["validation_ids"]) and
+                        set(part["sample_ids"]) | set(part["validation_ids"]) == set(ids), "CV sample coverage")
+        require(partitions[-1]["sample_ids"] == ids, "Final-fit sample order differs")
+        candidates = evidence["candidates"]
+        require([c["neighbors"] for c in candidates] == list(range(requested, 0, -1)), "Missing ENN candidates")
+        for candidate in candidates:
+            require([c["partition"] for c in candidate["counts"]] == names, "Missing candidate partition counts")
+            loses_class = False
+            for counts, part in zip(candidate["counts"], partitions):
+                after = counts["after"]
+                require(set(after) == set(classes) and all(type(n) is int and 0 <= n <= part["before"][label]
+                                                         for label, n in after.items()), "Invalid post-ENN counts")
+                loses_class |= any(n == 0 for n in after.values())
+            require(loses_class, "An ENN candidate preserves every class")
+        require(evidence["outputs_absent"] is True, "Model or evaluation output was produced")
+        for key in ("training_table", "command_log", "training_log"):
+            item = evidence[key]
+            require(bool(item["path"]) and re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is not None,
+                    "Missing input/log checksum")
+            if check_files:
+                require(checksum(Path(item["path"])) == item["sha256"], "Input/log evidence changed")
+        require(bool(evidence["command"]), "Missing training command")
+        if check_files:
+            require(not unexpected_rejection_outputs(Path(evidence["case_directory"])), "Rejection has model/evaluation outputs")
+        if result.get("status") == "expected_rejection":
+            require(bool(result["evidence_file"]) and
+                    re.fullmatch(r"[0-9a-f]{64}", result["evidence_sha256"]) is not None, "Missing verification report")
+            if check_files:
+                path = Path(result["evidence_file"])
+                require(checksum(path) == result["evidence_sha256"] and
+                        json.loads(path.read_text()) == evidence, "Verification report changed")
+        return []
+    except (KeyError, TypeError, ValueError, OSError, AttributeError, IndexError) as error:
+        return [str(error)]
+
+
+def verify_enn_rejection(result, train, directory, command):
+    """Independently reproduce exhausted ENN using current inputs, never the production helper."""
+    import numpy as np
+    from imblearn.under_sampling import EditedNearestNeighbours
+    from sklearn.model_selection import StratifiedGroupKFold
+    from sklearn.preprocessing import LabelEncoder
+
+    require(eligible_enn_rejection(result), "Rejection is outside the approved case")
+    require(command.get("exit_code") == 1 and command.get("status") != "timed_out", "Not a training failure")
+    require(Path(command["log"]).resolve() == (directory / "command.log").resolve(), "Failure occurred after training")
+    argv = command["command"]
+    require("--features-train" in argv and
+            Path(argv[argv.index("--features-train") + 1]).resolve() == train.resolve(), "Wrong training input")
+    command_log, training_log = directory / "command.log", directory / "04_model/train.log"
+    require("Step 'train' failed with exit code 1." in command_log.read_text(), "Failure was not in the training step")
+    pattern = (r"^(?:maGeneLearn\.steps\.)?sampling_validation\.SamplingClassLoss: "
+               r"Optimization trial (\d+): no ENN neighbour count from (\d+) to 1 "
+               r"preserved every class\. Sampling was not disabled\.$")
+    training_text = training_log.read_text()
+    matches = set(re.findall(pattern, training_text, re.MULTILINE))
+    require(len(matches) == 1, "No unambiguous exhausted-ENN traceback")
+    require(re.fullmatch(pattern, training_text.rstrip().splitlines()[-1]) is not None,
+            "The terminal training error is not exhausted ENN")
+    trial, requested = map(int, next(iter(matches)))
+    require(0 <= trial < 3 and 3 <= requested <= 10, "Unexpected optimization parameters")
+    require(not unexpected_rejection_outputs(directory), "Training produced model/evaluation outputs")
+    data = frame(train)
+    require(data.index.is_unique and data.columns.is_unique, "Duplicate training identifiers")
+    X = data.drop(columns=["source_summary", "cluster5"])
+    encoder = LabelEncoder()
+    y = encoder.fit_transform(data.source_summary)
+    classes = encoder.classes_.tolist()
+    require(classes == ["Bovine", "Poultry", "Swine"], "Wrong training labels")
+    groups = data.cluster5.to_numpy()
+    splits = list(StratifiedGroupKFold(3, shuffle=True, random_state=50).split(X, y, groups))
+    rows = [("fold_%d" % (i + 1), tr, va) for i, (tr, va) in enumerate(splits)]
+    rows.append(("final_fit", np.arange(len(y)), np.array([], dtype=int)))
+
+    def counts(values):
+        return {label: int(np.sum(values == i)) for i, label in enumerate(classes)}
+
+    evidence = {"policy": ENN_REJECTION_POLICY, "exit_code": 1, "trial": trial,
+                "requested_neighbors": requested, "seed": 50, "cv_folds": 3,
+                "sampler": {"kind_sel": "mode", "sampling_strategy": "auto"}, "classes": classes,
+                "sample_ids": data.index.astype(str).tolist(), "features": X.columns.tolist(),
+                "case_directory": str(directory), "command": argv, "outputs_absent": True,
+                "partitions": [], "candidates": []}
+    for name, tr, va in rows:
+        evidence["partitions"].append({"name": name, "sample_ids": data.index[tr].astype(str).tolist(),
+                                        "groups": groups[tr].astype(str).tolist(), "before": counts(y[tr]),
+                                        "validation_ids": data.index[va].astype(str).tolist(),
+                                        "validation_groups": groups[va].astype(str).tolist()})
+    for neighbors in range(requested, 0, -1):
+        candidate = {"neighbors": neighbors, "counts": []}
+        for name, tr, _ in rows:
+            _, sampled = EditedNearestNeighbours(kind_sel="mode", n_neighbors=neighbors).fit_resample(X.iloc[tr], y[tr])
+            candidate["counts"].append({"partition": name, "after": counts(sampled)})
+        evidence["candidates"].append(candidate)
+    for key, path in (("training_table", train), ("command_log", command_log), ("training_log", training_log)):
+        evidence[key] = {"path": str(path), "sha256": checksum(path)}
+    errors = expected_rejection_errors({**result, "rejection": evidence})
+    require(not errors, "; ".join(errors))
+    return evidence
 
 
 def require(condition, message):
@@ -356,6 +506,33 @@ class Runner:
         return {"artifact": str(artifact), "features": len(feature_names), "external_routes": list(route_predictions),
                 "explanations": explanations}
 
+    def execute_case(self, dataset, directory, selection, cached, model, sampling):
+        started = time.monotonic()
+        result = {"kind": "model", "dataset": dataset, "selection": selection,
+                  "model": model, "sampling": sampling}
+        print("Running", dataset, selection, sampling, model, flush=True)
+        try:
+            result.update(self.case(dataset, directory, selection, cached, model, sampling))
+            result["status"] = "passed"
+        except Exception as error:
+            result.update(status="failed", error=str(error))
+            if eligible_enn_rejection(result):
+                case = self.output / dataset / "models" / ("%s_%s_%s_%s" % (dataset, selection, model, sampling))
+                try:
+                    evidence = verify_enn_rejection(result, cached["train"], case, self.report["commands"][-1])
+                    path = case / "expected_rejection.json"
+                    path.write_text(json.dumps(evidence, indent=2) + "\n")
+                    result.update(status="expected_rejection", rejection=evidence, evidence_file=str(path),
+                                  evidence_sha256=checksum(path),
+                                  reason="Independently verified exhausted ENN fallback; no model was trained")
+                except Exception as verification_error:
+                    result["rejection_verification_error"] = str(verification_error)
+        result["seconds"] = time.monotonic() - started
+        self.results.append(result)
+        self.save()
+        print(result["status"], result.get("reason", result.get("error", "")), flush=True)
+        return result
+
     def run(self):
         for dataset in self.args.datasets:
             directory = self.args.fixtures / ("dataset1_multiclass" if dataset == "multiclass" else "dataset2_binary")
@@ -383,23 +560,15 @@ class Runner:
                         continue
                 for sampling in self.args.samplings:
                     for model in self.args.models:
-                        started = time.monotonic()
-                        result = {"kind": "model", "dataset": dataset, "selection": selection, "model": model, "sampling": sampling}
-                        print("Running", dataset, selection, sampling, model, flush=True)
-                        try:
-                            result.update(self.case(dataset, directory, selection, cache, model, sampling))
-                            result["status"] = "passed"
-                        except Exception as error:
-                            result.update(status="failed", error=str(error))
-                        result["seconds"] = time.monotonic() - started
-                        self.results.append(result)
-                        self.save()
-                        print(result["status"], result.get("error", ""), flush=True)
+                        self.execute_case(dataset, directory, selection, cache, model, sampling)
         self.save()
         self.report["summary"] = dict(collections.Counter(r["status"] for r in self.results if r["kind"] == "model"))
         export_model_index(self.report, self.output / "model_index.tsv")
         self.save()
-        return int(any(r["status"] != "passed" for r in self.results))
+        rejections = [r for r in self.results if r["status"] == "expected_rejection"]
+        return int(len(rejections) > 1 or any(
+            r["status"] != "passed" and not (r["status"] == "expected_rejection" and not expected_rejection_errors(r))
+            for r in self.results))
 
 
 def main():

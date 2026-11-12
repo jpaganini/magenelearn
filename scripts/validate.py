@@ -20,10 +20,27 @@ import xml.etree.ElementTree as ET
 HELPERS = Path(__file__).resolve().parent / "validation"
 sys.path.insert(0, str(HELPERS))
 from common import ROOT, checksum, run_process
+from matrix import expected_rejection_errors
 
 MODELS = ["RFC", "XGBC", "SVM", "LR"]
 SELECTIONS = ["none", "muvr_RFC", "muvr_XGBC", "boruta_RFC", "boruta_XGBC"]
 SAMPLINGS = ["none", "random", "smote", "random_under", "enn", "smoteenn"]
+
+
+def approved_rejection_count(results, profile):
+    claims = [r for r in results if r.get("status") == "expected_rejection"]
+    if len(claims) > 1:
+        raise ValueError("At most one expected ENN rejection is permitted")
+    for result in claims:
+        errors = expected_rejection_errors(result)
+        if profile != "full" or result.get("stage") != "matrix" or errors:
+            raise ValueError("Unapproved expected rejection: " + "; ".join(errors or ["Wrong profile or stage"]))
+    return len(claims)
+
+
+def expected_artifact_audits(results, profile):
+    # Never derive the allowance from the number of files/CSV rows found.
+    return (246 if profile == "full" else 40) - approved_rejection_count(results, profile)
 
 
 def coverage_errors(results, profile):
@@ -35,6 +52,10 @@ def coverage_errors(results, profile):
     if set(keys) != expected or len(keys) != len(expected):
         errors.append("Matrix coverage mismatch: expected %d unique cases, received %d; missing=%s; unexpected=%s" %
                       (len(expected), len(keys), sorted(expected - set(keys)), sorted(set(keys) - expected)))
+    try:
+        approved_rejection_count([{**r, "stage": "matrix"} for r in results], profile)
+    except ValueError as error:
+        errors.append(str(error))
     return errors
 
 
@@ -42,41 +63,65 @@ def write_reports(report, output):
     """Write reports even for setup errors and interrupted/blocked stages."""
     results = report["results"]
     counts = collections.Counter(r["status"] for r in results)
-    failed = any(r["status"] not in {"passed", "omitted"} for r in results)
+    try:
+        approved_rejection_count(results, report["profile"])
+        rejections_valid = True
+    except ValueError:
+        rejections_valid = False
+
+    def accepted(result):
+        return result["status"] in {"passed", "omitted"} or (rejections_valid and result["status"] == "expected_rejection")
+
+    failed = any(not accepted(r) for r in results)
     report["summary"] = dict(counts)
     report["status"] = "failed" if failed else "passed" if report.get("finished_utc") else "running"
     report["validation_scope"] = report["profile"] + " profile only"
     matrix = [r for r in results if r.get("stage") == "matrix" and r.get("kind") == "model"]
-    report["coverage"] = {"matrix": {"passed": sum(r["status"] == "passed" for r in matrix),
-                                     "expected": 240 if report["profile"] == "full" else 40},
-                          "matrix_by_problem": {problem: {"passed": sum(r["status"] == "passed" and r.get("dataset") == problem for r in matrix),
-                                                          "expected": 120 if report["profile"] == "full" else 20}
+    def coverage(cases, expected):
+        trained = sum(r["status"] == "passed" for r in cases)
+        rejected = sum(r["status"] == "expected_rejection" and accepted(r) for r in cases)
+        return {"passed": trained, "trained": trained, "expected_rejections": rejected,
+                "accepted": trained + rejected, "unexpected_failures": sum(not accepted(r) for r in cases),
+                "recorded": len(cases), "expected": expected}
+
+    report["coverage"] = {"matrix": coverage(matrix, 240 if report["profile"] == "full" else 40),
+                          "matrix_by_problem": {problem: coverage([r for r in matrix if r.get("dataset") == problem],
+                                                                  120 if report["profile"] == "full" else 20)
                                                 for problem in ["binary", "multiclass"]}}
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     suite = ET.Element("testsuite", name="maGeneLearn-" + report["profile"], tests=str(len(results)),
-                       failures=str(sum(r["status"] not in {"passed", "omitted"} for r in results)),
+                       failures=str(sum(not accepted(r) for r in results)),
                        skipped=str(counts["omitted"]))
     for result in results:
         case = ET.SubElement(suite, "testcase", name=result["name"], time=str(result.get("seconds", 0)))
         if result["status"] == "omitted":
             ET.SubElement(case, "skipped", message=result.get("reason", "Explicit profile omission"))
-        elif result["status"] != "passed":
+        elif result["status"] == "expected_rejection" and accepted(result):
+            props = ET.SubElement(case, "properties")
+            ET.SubElement(props, "property", name="outcome", value="expected_rejection")
+            ET.SubElement(props, "property", name="evidence", value=result["evidence_file"])
+        elif not accepted(result):
             ET.SubElement(case, "failure", message=result.get("error", result["status"])).text = result.get("error", result["status"])
         if result.get("log"):
-            ET.SubElement(case, "system-out").text = result["log"]
+            ET.SubElement(case, "system-out").text = result["log"] + (
+                "\n" + result.get("reason", "") + "\nEvidence: " + result.get("evidence_file", "")
+                if result["status"] == "expected_rejection" else "")
     ET.ElementTree(suite).write(output / "junit.xml", encoding="unicode", xml_declaration=True)
     lines = ["# maGeneLearn validation: " + report["status"], "", "Profile: **" + report["profile"] + "**",
              "", "This result covers the declared profile, not every possible input or configuration.", "",
              "| Status | Count |", "|---|---:|"]
     lines += ["| %s | %d |" % pair for pair in sorted(counts.items())]
-    lines += ["", "Main model matrix: **%d/%d passed**." %
-              (report["coverage"]["matrix"]["passed"], report["coverage"]["matrix"]["expected"])]
-    lines += ["", "## Failures and omissions", ""]
+    matrix_counts = report["coverage"]["matrix"]
+    lines += ["", "Main model matrix: **%d trained; %d verified expected rejections; %d unexpected failures** (%d required configurations)." %
+              (matrix_counts["trained"], matrix_counts["expected_rejections"], matrix_counts["unexpected_failures"], matrix_counts["expected"])]
+    lines += ["", "## Expected rejections, failures and omissions", ""]
     for r in results:
         if r["status"] != "passed":
-            lines.append("- **%s**: %s — %s" % (r["status"], r["name"], r.get("error", r.get("reason", ""))))
+            lines.append("- **%s**: %s — %s" % (r["status"], r["name"], r.get("reason", r.get("error", ""))))
             if r.get("log"):
                 lines.append("  Log: `%s`" % r["log"])
+            if r.get("evidence_file"):
+                lines.append("  Verification evidence: `%s`" % r["evidence_file"])
     lines += ["", "See `report.json` and per-stage reports for commands, exact coverage, model inputs, and provenance."]
     (output / "summary.md").write_text("\n".join(lines) + "\n")
     return int(failed)
@@ -91,7 +136,7 @@ class Validation:
                     "MPLCONFIGDIR": str(self.output / "matplotlib_cache")}
         for key in ["OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "LOKY_MAX_CPU_COUNT"]:
             self.env[key] = "1"
-        self.report = {"schema_version": 1, "profile": profile, "results": [], "stages": [],
+        self.report = {"schema_version": 2, "profile": profile, "results": [], "stages": [],
                        "python": sys.version, "executable": sys.executable,
                        "started_utc": datetime.now(timezone.utc).isoformat(),
                        "seeds": {"split_boruta": 42, "training_evaluation": 50, "muvr": None},
@@ -135,8 +180,10 @@ class Validation:
                         raise ValueError("; ".join(errors))
             if result.returncode:
                 raise ValueError("Command exited %d; see %s" % (result.returncode, log))
-            if report_path is not None and any(r["status"] != "passed" for r in cases):
-                raise ValueError("Stage reported required failed or blocked cases")
+            if report_path is not None:
+                approved_rejection_count([{**r, "stage": name} for r in cases], self.profile)
+                if any(r["status"] not in {"passed", "expected_rejection"} for r in cases):
+                    raise ValueError("Stage reported required failed or blocked cases")
             entry["status"] = "passed"
         except Exception as error:
             entry.update(status="failed", error=str(error))
@@ -216,7 +263,7 @@ class Validation:
             audit = self.output / "artifact_audit"
             self.stage("artifact_audit", [sys.executable, HELPERS / "audit.py", "--profile", self.profile,
                                           "--model-index", *existing, "--output", audit], audit / "report.json",
-                       246 if self.profile == "full" else 40)
+                       expected_artifact_audits(self.report["results"], self.profile))
             self.combine_indices(existing)
             for rel, original in self.report["fixture_files_sha256"].items():
                 if checksum(ROOT / rel) != original:
@@ -253,7 +300,7 @@ class Validation:
             writer.writerows(rows)
 
     def stage_failed_artifacts(self):
-        # Successful models remain available locally; CI uploads only failure evidence.
+        # Keep expected rejections separate from unexpected failure evidence.
         for stage in self.report["stages"]:
             path = self.output / stage["name"] / "report.json"
             if not path.is_file():
@@ -279,7 +326,10 @@ class Validation:
                     else:
                         continue
                     if directory.is_dir():
-                        shutil.copytree(directory, self.output / "failed_cases" / stage["name"] / name)
+                        expected = (case.get("status") == "expected_rejection" and self.profile == "full" and
+                                    stage["name"] == "matrix" and not expected_rejection_errors(case))
+                        folder = "expected_rejections" if expected else "failed_cases"
+                        shutil.copytree(directory, self.output / folder / stage["name"] / name)
             except Exception as error:
                 self.report["results"].append({"name": "failure_evidence/" + stage["name"], "status": "failed", "error": str(error)})
 

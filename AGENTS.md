@@ -106,7 +106,9 @@ SVM/LR selection runs. Chi-square alone and simultaneous MUVR/Boruta are invalid
   and supported skip/failure behavior. Preserve previously fixed class/probability,
   binary AUPRC, SHAP alignment, filename-parsing, and SVM alignment behavior.
 - Test invalid combinations and inputs for clear failures. A currently broken
-  accepted configuration is a failure, not an unsupported configuration.
+  accepted configuration is a failure, not an unsupported configuration. The
+  single independently verified ENN rejection described below is the only
+  explicit exception; it is not successful model training.
 
 Use small, documented binary and multiclass fixtures with adequate independent
 groups and per-fold class counts for all configured neighbor-based samplers.
@@ -161,8 +163,24 @@ Results and failure handling:
   expectations or silently substitute methods to obtain a passing result.
 - For sampling changes, verify class retention in every training fold and final
   fit, and preservation of applied settings in trial tables and saved pipelines.
-- Distinguish successful fallback from exhausted fallback. A configuration that
-  still fails remains failed, even when its negative regression test passes.
+- Distinguish successful fallback from exhausted fallback. Only the full-profile
+  multiclass / `muvr_RFC` / `XGBC` / `enn` case may be `expected_rejection`:
+  training must exit one with an exhausted-ENN traceback, produce no model or
+  evaluation artifacts, and independently reproduce class loss for every
+  candidate from the requested neighbour count down to one across all three
+  grouped training folds and the final-fit partition (seed 50). Do not call the
+  production fallback helper for this verification. Record IDs, feature order,
+  input/log checksums, commands, exit code and before/after class counts.
+- Successful execution of that case must pass the normal model checks. Other
+  errors, timeouts, unverifiable claims and other configurations remain failed.
+  At most one verified rejection is allowed; all 240 distinct full-profile
+  configurations remain required. Report trained models and expected rejections
+  separately. JUnit treats a verified rejection as a successful behavioral check,
+  with an explicit outcome property, never as skipped or successfully trained.
+- Full requires 246 artifact audits, or 245 after exactly one verified rejection;
+  derive this allowance from verified records, never from files found. Preserve
+  expected-rejection evidence under `expected_rejections/`, separately from
+  `failed_cases/`. Quick remains 40 successful models and 40 audits.
 - Report exact commands, report paths, source revision and dirty state,
   environment, runtime and executed/expected coverage.
 - Report local and hosted results separately. Quick success is not full

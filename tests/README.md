@@ -30,14 +30,14 @@ fixture manifest remain provenance only. No fixtures are rebuilt or rewritten.
 | Binary/multiclass model × selection matrix | 40 cases, sampling none | 240 cases, all six samplers |
 | Fresh validated selectors | Eight, computed/supplied Chi-square | Eight, computed/supplied Chi-square |
 | Full CLI train: both outcomes × automatic/supplied splits | Four | Four |
-| Reserved labelled/unlabelled ready/extraction routes | Every matrix model | Every matrix/variant model |
+| Reserved labelled/unlabelled ready/extraction routes | Every matrix model | Every successfully trained matrix/variant model |
 | Fixed-trial model branches, sampler endpoints, invalid inputs | Required | Required |
 | Missing-feature zero-fill, unseen labels, empty Boruta | Required | Required |
 | Additional CLI LR l1/elasticnet, XGBC lossguide | Omitted | Six runs |
 | LR coefficients and feature importance | Required | Required |
 | Tree SHAP | Explicitly omitted | Required, including NPY/TSV alignment |
 | SVM permutation importance | Explicitly omitted | Two full-feature diagnostic runs |
-| Independent saved-artifact audits | 40 | 246 |
+| Independent saved-artifact audits | 40 | 246, or 245 after the one verified rejection below |
 
 Models are RFC/XGBC/SVM/LR. Strategies are no selection or Chi-square followed
 by MUVR/Boruta using RFC/XGBC. Sampling settings are none, random, smote,
@@ -89,12 +89,44 @@ Each run creates a unique ignored `validation_results/` directory containing:
 - `models_for_dataset3.tsv`, pairing successful models with compatible ready
   tables, raw inputs, feature specifications, and checksums.
 - `failed_cases/` with matrix-model failure evidence for GitHub uploads.
+- `expected_rejections/` with the independently verified ENN rejection, when applicable.
 
-Passed, failed, blocked, and deliberately omitted checks remain distinct.
+Passed, expected-rejection, failed, blocked, and deliberately omitted checks remain distinct.
 Missing/duplicate matrix cases, missing artifacts, failed selectors, timeouts,
 or incomplete required stages make the command return nonzero. Quick success
 means only that the quick profile passed. Failed reports are never converted
 to passes by silently lowering budgets or rewriting expectations.
+
+### One permitted ENN rejection
+
+Full validation permits `expected_rejection` only for multiclass / `muvr_RFC` /
+`XGBC` / `enn`. The training command must exit one with a terminal exhausted-ENN
+traceback and produce no model or evaluation/prediction outputs. The validator
+independently reconstructs the label encoding and three grouped folds (seed 50),
+then directly applies ENN with `kind_sel="mode"` for each neighbour count from
+the requested value down to one. Every candidate must lose a class in at least
+one training fold or the final-fit partition. A candidate that preserves all
+classes invalidates the claimed rejection. No hold-out outcomes are used.
+
+Evidence includes commands, exit code, selected features, ordered sample IDs,
+group/fold membership, input/log hashes and all before/after counts. It is kept
+in `expected_rejection.json` and copied under `expected_rejections/`; the existing
+GitHub artifact rules upload these JSON reports and logs.
+
+The matrix still requires 240 distinct configurations. A valid result can be
+239 trained configurations, one verified expected rejection and zero unexpected
+failures. Reports never call that 240 trained models. The rejected case has no
+model-index entry, downstream predictions or explanations, so required artifact
+audits become 245 (239 main models plus six variants). The allowance comes from
+the verified rejection record, never from the number of artifacts found.
+
+If that configuration trains successfully, all normal checks and all 246 audits
+apply. MUVR may select different features across runs. Other failures and missing
+outputs remain failures; the exception never applies to quick validation. JUnit
+records the verified rejection as a successful behavioral check with an explicit
+`outcome=expected_rejection` property, not a skip. Validation JSON schema version
+2 adds separate trained/expected-rejection/accepted/failure counts; the legacy
+coverage `passed` field continues to mean successfully trained configurations.
 
 Each CLI subprocess is limited to 30 minutes, with a two-hour limit for each
 SVM importance diagnostic. Timed-out subprocess groups are terminated so their
@@ -130,6 +162,7 @@ For a new model, selector, sampler, or input route, extend the shared case lists
 explicit expected coverage, artifact assertions, and this coverage table.
 Keep negative cases separate from valid supported configurations: a currently
 broken accepted configuration is a failure, not an unsupported option.
+The independently verified ENN rejection above is the single documented exception.
 
 Before claiming full validation, run the default profile from a fresh checkout
 without old models or local source uploads, inspect its complete report, and
