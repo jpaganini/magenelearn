@@ -76,6 +76,12 @@ import joblib               # For model serialization
 from sklearn.preprocessing import LabelEncoder # For encoding string labels
 import optuna
 from sklearn.model_selection import cross_validate
+try:
+    from sampling_validation import resolve_enn_neighbors
+except ModuleNotFoundError as error:
+    if error.name != "sampling_validation":
+        raise
+    from maGeneLearn.steps.sampling_validation import resolve_enn_neighbors
 
 # Set a global random seed for reproducibility
 RSEED = 50
@@ -282,18 +288,25 @@ def optuna_objective(trial, pipeline, X, y, groups, cv_splits, scoring, model_ke
 
     model.set_params(**params)
 
+    params.update(resolve_enn_neighbors(
+        model, X, y, cv_splits,
+        context=f"Optimization trial {trial.number}",
+    ))
+    trial.set_user_attr("applied_params", dict(params))
+
     start = time.time()
 
     if model_key == 'XGBC' and sampling == 'none':
         sw = compute_sample_weight("balanced", y)
         cv_results = cross_validate(
             model, X, y, groups=groups, cv=cv_splits,
-            scoring=scoring, fit_params={"model__sample_weight": sw}, n_jobs=n_jobs
+            scoring=scoring, fit_params={"model__sample_weight": sw},
+            n_jobs=n_jobs, error_score="raise"
         )
     else:
         cv_results = cross_validate(
             model, X, y, groups=groups, cv=cv_splits,
-            scoring=scoring, n_jobs=n_jobs
+            scoring=scoring, n_jobs=n_jobs, error_score="raise"
         )
 
     elapsed = time.time() - start
@@ -338,7 +351,7 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
                                 sampler=optuna.samplers.TPESampler(seed=RSEED))
     study.optimize(_objective, n_trials=n_iter, n_jobs=n_jobs)
 
-    best_params = study.best_params
+    best_params = dict(study.best_trial.user_attrs["applied_params"])
     best_score = study.best_value
 
     final_model = clone(pipeline)

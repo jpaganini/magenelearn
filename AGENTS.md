@@ -121,13 +121,61 @@ probability shape/order/range/row sums, prediction-label validity, confusion-mat
 totals, and independently recomputed metrics. Verify save/load prediction parity.
 Check explanation dimensions, class/sample/feature alignment, and reported status.
 
-Current infrastructure:
-- `test/` contains TSV fixtures; no executable automated test suite, comprehensive
-  matrix runner, or GitHub Actions workflow is currently tracked.
-- README.md §2 provides a manual integration example, not comprehensive coverage.
-- Existing interface checks are `maGeneLearn --help`,
-  `maGeneLearn train --help`, and `maGeneLearn test --help`.
-- Do not invent test commands or describe proposed scripts as existing.
+Validation commands and infrastructure:
+- Run commands from the repository root with the pinned dependencies and the
+  current checkout installed using `python -m pip install -e .`.
+- Run focused regression tests during development:
+  `python -m unittest discover -s tests -p 'test_*.py' -v`.
+- Run quick integration validation before presenting pipeline changes for review:
+  `python scripts/validate.py --profile quick`.
+- Run complete declared workflow validation for substantial pipeline changes:
+  `python scripts/validate.py`.
+- Before claiming full validation, run the full profile in a fresh, isolated
+  checkout containing the exact candidate changes, without local uploads,
+  previous models or selector outputs from earlier runs. Preserve working-tree
+  changes.
+- Targeted reruns support diagnosis but do not replace required profile runs.
+
+Coverage and supporting scripts:
+- `scripts/validate.py` is the canonical local and GitHub Actions entry point.
+- Quick covers 40 model/selection configurations across both outcome types,
+  using sampling `none`. Full covers 240 configurations with all six samplers,
+  plus six additional saved-model variant cases.
+- Both profiles include fixture integrity, regression tests, CLI help, eight
+  fresh selectors, four complete training workflows, and labelled/unlabelled
+  testing through ready-table and extraction routes.
+- Full additionally requires tree SHAP and full-feature SVM permutation
+  importance diagnostics on the documented 36/24-sample subsets.
+- `tests/` contains automated regression tests; `scripts/validation/` contains
+  supporting runners and artifact audits. See `tests/README.md` for details.
+- Extend cases, expected coverage and scientific assertions when adding a
+  supported model, selector, sampler or workflow route.
+
+Results and failure handling:
+- Preserve `test/` fixtures. Write generated results to a unique directory under
+  ignored `validation_results/`; an explicit `--output` directory must be new.
+- Inspect `summary.md`, `report.json`, `junit.xml` and relevant stage logs.
+  Missing artifacts, incomplete coverage, failed required cases and timeouts
+  prevent a validation pass.
+- Preserve failure evidence. Do not weaken budgets, change seeds, rewrite
+  expectations or silently substitute methods to obtain a passing result.
+- For sampling changes, verify class retention in every training fold and final
+  fit, and preservation of applied settings in trial tables and saved pipelines.
+- Distinguish successful fallback from exhausted fallback. A configuration that
+  still fails remains failed, even when its negative regression test passes.
+- Report exact commands, report paths, source revision and dirty state,
+  environment, runtime and executed/expected coverage.
+- Report local and hosted results separately. Quick success is not full
+  validation; identify all outstanding required runs.
+
+GitHub validation:
+- The Validation workflow runs quick validation on PRs targeting `main` and
+  pushes to `main`. Manual runs offer quick/full, defaulting to full.
+- There are no scheduled runs. Inspect hosted reports and logs before claiming
+  CI validation succeeded.
+- Workflow checks do not enforce merge restrictions by themselves. Do not
+  change branch protection, rulesets or merge behavior without authorization.
+
 - Do not treat external fixtures as independent validation without overlap checks.
 - CLI dry-run is not integration validation and can create directories or inspect
   artifacts. Do not assume it is side-effect-free.
