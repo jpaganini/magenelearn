@@ -351,7 +351,14 @@ def search_hyperparameters_optuna(pipeline, X, y, groups, cv_splits,
                                 sampler=optuna.samplers.TPESampler(seed=RSEED))
     study.optimize(_objective, n_trials=n_iter, n_jobs=n_jobs)
 
-    best_params = dict(study.best_trial.user_attrs["applied_params"])
+    best_params = dict(study.best_params)
+    # Carry resolved sampler settings into the final fit, but preserve model
+    # defaults such as SVM probability=True (disabled only during tuning).
+    best_params.update({
+        key: value
+        for key, value in study.best_trial.user_attrs["applied_params"].items()
+        if key.startswith("sampler__")
+    })
     best_score = study.best_value
 
     final_model = clone(pipeline)

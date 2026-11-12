@@ -105,3 +105,28 @@ class SamplingValidationTests(unittest.TestCase):
         self.assertEqual(history.loc[0, "sampler__n_neighbors"], 4)
         self.assertEqual(fitted.named_steps["sampler"].n_neighbors, 4)
         self.assertEqual(set(fitted.classes_), set(self.y))
+
+    def test_svm_final_fit_preserves_probability_support(self):
+        import importlib.util
+        from pathlib import Path
+        from unittest.mock import patch
+        import optuna
+
+        path = Path(__file__).resolve().parents[1] / "maGeneLearn/steps/04_train_model.py"
+        spec = importlib.util.spec_from_file_location("training_svm_test", path)
+        training = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(training)
+        study = optuna.create_study(direction="maximize")
+        study.enqueue_trial({"model__C": 1.0, "model__kernel": "rbf",
+                             "model__gamma": "scale", "model__class_weight": None})
+        with patch.object(training.optuna, "create_study", return_value=study):
+            fitted, history, _, _ = training.search_hyperparameters_optuna(
+                training.prepare_pipeline("SVM", "none", 1),
+                self.X, self.y, np.arange(len(self.y)), self.splits,
+                "SVM", "none", 1, ["balanced_accuracy"], 1,
+            )
+        self.assertFalse(history.loc[0, "model__probability"])
+        self.assertTrue(fitted.named_steps["model"].probability)
+        probabilities = fitted.predict_proba(self.X)
+        self.assertEqual(probabilities.shape, (len(self.y), 3))
+        np.testing.assert_allclose(probabilities.sum(axis=1), 1)
