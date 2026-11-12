@@ -11,6 +11,19 @@ from common import checksum
 from matrix import check_artifact_probabilities, check_evaluation, frame, one, require
 
 
+def check_tuning(directory):
+    """Require real optimization output and independently verify fold aggregates."""
+    import numpy as np
+    trials = frame(one(directory, "*.tsv"))
+    require(trials.index.is_unique and 1 <= len(trials) <= 3, "Invalid optimization trial history")
+    columns = ["fold0_score", "fold1_score", "fold2_score"]
+    scores = trials[columns].to_numpy(dtype=float)
+    valid = np.isfinite(scores).all(axis=1)
+    require(valid.any(), "Optimization has no finite three-fold trial")
+    np.testing.assert_allclose(trials.loc[valid, "score_mean"], scores[valid].mean(axis=1), atol=1e-10)
+    np.testing.assert_allclose(trials.loc[valid, "score_std"], scores[valid].std(axis=1), atol=1e-10)
+
+
 def check_configuration(fitted, model, sampling):
     """Require the requested CLI branches in the saved pipeline itself."""
     expected_models = {"RFC": "RandomForestClassifier", "XGBC": "XGBClassifier", "SVM": "SVC", "LR": "LogisticRegression"}
@@ -52,6 +65,7 @@ def main():
                 expected = frame(Path(row["ready_labelled"]))
                 require(raw.equals(expected.drop(columns=["source_summary", "cluster5"])), "Ready-table predictor mismatch")
                 directory = Path(row["model_file"]).parents[1]
+                check_tuning(directory / "05_cv")
                 predictions = check_evaluation(directory / "labelled_ready/07_test_eval", expected)
                 classes = sorted(expected.source_summary.unique())
                 fitted = check_artifact_probabilities(Path(row["model_file"]), raw, predictions, classes)

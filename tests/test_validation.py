@@ -67,6 +67,20 @@ class ValidationRegression(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "classifier differs"):
             check_configuration(fitted, "LR", "random")
 
+    def test_missing_or_incorrect_tuning_output_is_detected(self):
+        from audit import check_tuning
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "Expected one"):
+                check_tuning(directory)
+            path = directory / "trials.tsv"
+            header = "trial\tscore_mean\tscore_std\tfold0_score\tfold1_score\tfold2_score\n"
+            path.write_text(header + "0\t0.5\t0\t0.5\t0.5\t0.5\n")
+            check_tuning(directory)
+            path.write_text(header + "0\t0.6\t0\t0.5\t0.5\t0.5\n")
+            with self.assertRaises(AssertionError):
+                check_tuning(directory)
+
     def test_report_failure_omission_and_running_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)

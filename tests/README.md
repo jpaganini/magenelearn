@@ -60,7 +60,9 @@ Full-training-sample permutation importance is not part of either profile.
 The runner checks artifacts and scientific invariants, not only exit codes.
 It checks IDs, groups, classes, feature order/values, encoder preservation,
 probability alignment/range/sums, independently recomputed metrics,
-save/load parity, four prediction routes, and applicable explanations.
+save/load parity, four prediction routes, and applicable explanations. Artifact
+audits also check saved classifier/sampler configuration and optimization output,
+including independently recomputed fold-score means and standard deviations.
 
 Focused hold-out tests check generated/supplied tables, no-hold-out execution,
 and selection-only execution. An isolated in-memory copy of the original
@@ -106,8 +108,9 @@ The Validation workflow uses Ubuntu 22.04/Python 3.9, installs the checkout and
 its pinned dependencies, and invokes this same entry point. It runs quick
 validation on pull requests targeting main and pushes to main. There is no
 schedule. Use Actions → Validation → Run workflow to choose full or quick;
-manual runs default to full. GitHub makes manual dispatch available once the
-workflow exists on the default branch.
+manual runs default to full. GitHub shows the Run workflow button once the
+workflow exists on the default branch. Before merge, a registered workflow can
+also be dispatched through the GitHub API with the feature branch as its ref.
 
 Only dependency downloads are cached. Reports/logs are uploaded even when
 validation fails and retained for seven days. Generated models and explanation
