@@ -171,6 +171,10 @@ maGeneLearn test --help
 
 ## 3. Command-line overview
 
+For repeatable development checks, run `python scripts/validate.py --profile quick`
+or `python scripts/validate.py` for the complete declared validation profile.
+See [the validation guide](tests/README.md) for coverage, reports, and GitHub Actions.
+
 MaGeneLearn exposes two main commands:
 
 | Command | Purpose |

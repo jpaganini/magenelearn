@@ -78,6 +78,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import label_binarize
 
 import xgboost as xgb
+try:
+    from sampling_validation import check_sampling_classes
+except ModuleNotFoundError as error:
+    if error.name != "sampling_validation":
+        raise
+    from maGeneLearn.steps.sampling_validation import check_sampling_classes
 
 # ─────────────────────────────── global consts ───────────────────────────────
 RSEED = 50
@@ -492,6 +498,10 @@ def run_evaluation(
                 fit_kwargs[key] = compute_sample_weight('balanced', y_tr)
 
             try:
+                check_sampling_classes(
+                    clf, X_tr, y_tr,
+                    context=f"Training evaluation fold {fold}/{n_splits}",
+                )
                 clf.fit(X_tr, y_tr, **fit_kwargs)
 
             except Exception as e:

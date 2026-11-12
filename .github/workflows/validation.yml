@@ -1,0 +1,80 @@
+name: Validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Validation coverage
+        type: choice
+        options: [full, quick]
+        default: full
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.ref }}-${{ inputs.profile || 'quick' }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: ${{ inputs.profile || 'quick' }} validation
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      LOKY_MAX_CPU_COUNT: '1'
+      MPLBACKEND: Agg
+      PYTHONHASHSEED: '0'
+      VALIDATION_PROFILE: ${{ inputs.profile || 'quick' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.9'
+          cache: pip
+          cache-dependency-path: |
+            setup.py
+            pyproject.toml
+      - name: Install repository and pinned dependencies
+        run: |
+          python -m pip install -e .
+          python -m pip check
+      - name: Run validation
+        run: python scripts/validate.py --profile "$VALIDATION_PROFILE" --output validation_results/ci
+      - name: Publish validation summary
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -f validation_results/ci/summary.md ]; then
+            cat validation_results/ci/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Validation did not produce a summary. Inspect setup and runner logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Run logs and downloadable evidence: $RUN_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload reports, logs, and failed-case evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ env.VALIDATION_PROFILE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            validation_results/ci/**/*.json
+            validation_results/ci/**/*.log
+            validation_results/ci/**/*.xml
+            validation_results/ci/**/*.md
+            validation_results/ci/models_for_dataset3.tsv
+            validation_results/ci/**/model_index.tsv
+            validation_results/ci/failed_cases/**
