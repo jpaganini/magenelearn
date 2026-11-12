@@ -2,3 +2,6 @@
 # IDE
 .idea/
 *.iml
+
+# Generated validation evidence
+validation_results/
