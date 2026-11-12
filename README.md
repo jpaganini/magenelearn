@@ -137,21 +137,27 @@ A minimal end-to-end test command:
 
 ```bash
 maGeneLearn train \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features test/full_train/full_features.tsv \
-  --name full_pipe \
+  --meta-file test/dataset1_multiclass/metadata.tsv \
+  --features test/dataset1_multiclass/features.tsv \
+  --id-col Sample.ID \
+  --name example_pipeline \
   --n-splits 5 \
   --model RFC \
   --chisq \
   --muvr \
+  --feature-model RFC \
+  --muvr-n-repetitions 1 \
+  --muvr-n-outer 3 \
+  --muvr-n-inner 3 \
   --upsampling random \
-  --group-column t5 \
-  --label SYMP \
-  --lineage-col LINEAGE \
-  --k 5000 \
-  --n-iter 10 \
-  --output-dir full_pipe \
-  --n-splits-cv 7
+  --group-column cluster5 \
+  --label source_summary \
+  --lineage-col plot_MLST \
+  --k 256 \
+  --n-iter 3 \
+  --n-jobs 1 \
+  --output-dir example_pipeline \
+  --n-splits-cv 3
 ```
 
 For all available options:
@@ -329,18 +335,22 @@ all downstream model comparisons on exactly the same selected features.
 ```bash
 maGeneLearn train \
   --feature-selection-only \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features test/full_train/full_features.tsv \
-  --name STEC \
-  --label SYMP \
-  --group-column t5 \
-  --lineage-col LINEAGE \
+  --meta-file test/dataset1_multiclass/metadata.tsv \
+  --features test/dataset1_multiclass/features.tsv \
+  --id-col Sample.ID \
+  --name example \
+  --label source_summary \
+  --group-column cluster5 \
+  --lineage-col plot_MLST \
   --chisq \
   --muvr \
   --feature-model RFC \
-  --k 5000 \
+  --muvr-n-repetitions 1 \
+  --muvr-n-outer 3 \
+  --muvr-n-inner 3 \
+  --k 256 \
   --n-splits 5 \
-  --n-jobs -1 \
+  --n-jobs 1 \
   --output-dir selected_features_muvr
 ```
 
@@ -349,21 +359,22 @@ maGeneLearn train \
 ```bash
 maGeneLearn train \
   --feature-selection-only \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features test/full_train/full_features.tsv \
-  --name STEC \
-  --label SYMP \
-  --group-column t5 \
-  --lineage-col LINEAGE \
+  --meta-file test/dataset1_multiclass/metadata.tsv \
+  --features test/dataset1_multiclass/features.tsv \
+  --id-col Sample.ID \
+  --name example \
+  --label source_summary \
+  --group-column cluster5 \
+  --lineage-col plot_MLST \
   --chisq \
   --boruta \
   --feature-model RFC \
-  --boruta-max-iter 500 \
+  --boruta-max-iter 100 \
   --boruta-perc 95 \
   --boruta-alpha 0.1 \
-  --k 5000 \
+  --k 256 \
   --n-splits 5 \
-  --n-jobs -1 \
+  --n-jobs 1 \
   --output-dir selected_features_boruta
 ```
 
@@ -380,18 +391,20 @@ These commands create final feature tables in:
 
 ```bash
 maGeneLearn train \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features-train selected_features_muvr/03_final_features/STEC_train.tsv \
-  --features-test selected_features_muvr/03_final_features/STEC_test.tsv \
-  --name STEC_muvr \
+  --train-meta selected_features_muvr/00_data_split/example_train.tsv \
+  --test-meta selected_features_muvr/00_data_split/example_test.tsv \
+  --features-train selected_features_muvr/03_final_features/example_train.tsv \
+  --features-test selected_features_muvr/03_final_features/example_test.tsv \
+  --id-col Sample.ID \
+  --name example_muvr \
   --model RFC \
   --upsampling random \
-  --n-iter 100 \
-  --label SYMP \
-  --group-column t5 \
-  --n-splits-cv 7 \
+  --n-iter 3 \
+  --label source_summary \
+  --group-column cluster5 \
+  --n-splits-cv 3 \
   --scoring balanced_accuracy \
-  --n-jobs -1 \
+  --n-jobs 1 \
   --output-dir runs/RFC_random
 ```
 
@@ -399,19 +412,21 @@ maGeneLearn train \
 
 ```bash
 maGeneLearn train \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features-train selected_features_muvr/03_final_features/STEC_train.tsv \
-  --features-test selected_features_muvr/03_final_features/STEC_test.tsv \
-  --name STEC_muvr \
+  --train-meta selected_features_muvr/00_data_split/example_train.tsv \
+  --test-meta selected_features_muvr/00_data_split/example_test.tsv \
+  --features-train selected_features_muvr/03_final_features/example_train.tsv \
+  --features-test selected_features_muvr/03_final_features/example_test.tsv \
+  --id-col Sample.ID \
+  --name example_muvr \
   --model XGBC \
   --upsampling smoteenn \
   --xgb-policy lossguide \
-  --n-iter 100 \
-  --label SYMP \
-  --group-column t5 \
-  --n-splits-cv 7 \
+  --n-iter 3 \
+  --label source_summary \
+  --group-column cluster5 \
+  --n-splits-cv 3 \
   --scoring balanced_accuracy \
-  --n-jobs -1 \
+  --n-jobs 1 \
   --output-dir runs/XGBC_smoteenn
 ```
 
@@ -419,18 +434,20 @@ maGeneLearn train \
 
 ```bash
 maGeneLearn train \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features-train selected_features_muvr/03_final_features/STEC_train.tsv \
-  --features-test selected_features_muvr/03_final_features/STEC_test.tsv \
-  --name STEC_muvr \
+  --train-meta selected_features_muvr/00_data_split/example_train.tsv \
+  --test-meta selected_features_muvr/00_data_split/example_test.tsv \
+  --features-train selected_features_muvr/03_final_features/example_train.tsv \
+  --features-test selected_features_muvr/03_final_features/example_test.tsv \
+  --id-col Sample.ID \
+  --name example_muvr \
   --model SVM \
   --upsampling enn \
-  --n-iter 100 \
-  --label SYMP \
-  --group-column t5 \
-  --n-splits-cv 7 \
+  --n-iter 3 \
+  --label source_summary \
+  --group-column cluster5 \
+  --n-splits-cv 3 \
   --scoring balanced_accuracy \
-  --n-jobs -1 \
+  --n-jobs 1 \
   --output-dir runs/SVM_enn
 ```
 
@@ -438,19 +455,21 @@ maGeneLearn train \
 
 ```bash
 maGeneLearn train \
-  --meta-file test/full_train/2023_jp_meta_file.tsv \
-  --features-train selected_features_muvr/03_final_features/STEC_train.tsv \
-  --features-test selected_features_muvr/03_final_features/STEC_test.tsv \
-  --name STEC_muvr \
+  --train-meta selected_features_muvr/00_data_split/example_train.tsv \
+  --test-meta selected_features_muvr/00_data_split/example_test.tsv \
+  --features-train selected_features_muvr/03_final_features/example_train.tsv \
+  --features-test selected_features_muvr/03_final_features/example_test.tsv \
+  --id-col Sample.ID \
+  --name example_muvr \
   --model LR \
   --lr-penalty l2 \
   --upsampling random_under \
-  --n-iter 100 \
-  --label SYMP \
-  --group-column t5 \
-  --n-splits-cv 7 \
+  --n-iter 3 \
+  --label source_summary \
+  --group-column cluster5 \
+  --n-splits-cv 3 \
   --scoring balanced_accuracy \
-  --n-jobs -1 \
+  --n-jobs 1 \
   --output-dir runs/LR_random_under
 ```
 
@@ -494,12 +513,12 @@ Use this when you already have a filtered test matrix, for example from
 
 ```bash
 maGeneLearn test \
-  --model-file runs/RFC_random/04_model/STEC_muvr_RFC_random.joblib \
-  --features-test selected_features_muvr/03_final_features/STEC_test.tsv \
-  --name STEC_muvr_RFC_random \
+  --model-file runs/RFC_random/04_model/example_muvr_RFC_random.joblib \
+  --features-test selected_features_muvr/03_final_features/example_test.tsv \
+  --name example_muvr_RFC_random \
   --output-dir runs/RFC_random \
-  --label SYMP \
-  --group-column t5
+  --label source_summary \
+  --group-column cluster5
 ```
 
 ### 7.4 Evaluate labelled external isolates
@@ -508,14 +527,14 @@ Use this when you have a full external feature matrix and labels are available.
 
 ```bash
 maGeneLearn test \
-  --model-file runs/RFC_random/04_model/STEC_muvr_RFC_random.joblib \
-  --feature-file selected_features_muvr/02_muvr/STEC_muvr_RFC_min.tsv \
-  --features test/external_data/full_features_external.tsv \
-  --test-metadata test/external_data/metadata_external.tsv \
-  --name External_STEC_RFC_random \
+  --model-file runs/RFC_random/04_model/example_muvr_RFC_random.joblib \
+  --feature-file selected_features_muvr/02_muvr/example_muvr_RFC_min.tsv \
+  --features test/dataset3_test/multiclass/features.tsv \
+  --test-metadata test/dataset3_test/multiclass/metadata.tsv \
+  --name external_example_RFC_random \
   --output-dir runs/RFC_random_external \
-  --label SYMP \
-  --group-column t5
+  --label source_summary \
+  --group-column cluster5
 ```
 
 ### 7.5 Predict unlabelled external isolates
@@ -525,10 +544,10 @@ Use this when no ground-truth labels are available.
 ```bash
 maGeneLearn test \
   --predict-only \
-  --model-file runs/RFC_random/04_model/STEC_muvr_RFC_random.joblib \
-  --feature-file selected_features_muvr/02_muvr/STEC_muvr_RFC_min.tsv \
-  --features test/external_data/full_features_unlabelled.tsv \
-  --name External_STEC_RFC_random \
+  --model-file runs/RFC_random/04_model/example_muvr_RFC_random.joblib \
+  --feature-file selected_features_muvr/02_muvr/example_muvr_RFC_min.tsv \
+  --features test/dataset3_test/multiclass/predict_features.tsv \
+  --name external_example_RFC_random \
   --output-dir runs/RFC_random_predict
 ```
 
@@ -547,22 +566,22 @@ The test command infers model type, sampling strategy, and LR penalty from the
 model filename. For example:
 
 ```text
-STEC_muvr_RFC_random.joblib
-STEC_boruta_XGBC_smoteenn.joblib
-STEC_boruta_LR_random_under_l2.joblib
+example_muvr_RFC_random.joblib
+example_boruta_XGBC_smoteenn.joblib
+example_boruta_LR_random_under_l2.joblib
 ```
 
 If `--name` already contains the model/sampling suffix, MaGeneLearn does not add
 it again. This prevents duplicated names such as:
 
 ```text
-STEC_RFC_random_under_random_under_test_predictions.tsv
+example_RFC_random_under_random_under_test_predictions.tsv
 ```
 
 and fallback names such as:
 
 ```text
-STEC_NA_none_test_predictions.tsv
+example_NA_none_test_predictions.tsv
 ```
 
 ---
@@ -579,17 +598,21 @@ Use this when you already have pre-split metadata.
 maGeneLearn train \
   --no-split \
   --feature-selection-only \
-  --train-meta test/skip_split/train_metadata.tsv \
-  --test-meta test/skip_split/test_metadata.tsv \
-  --features test/skip_split/full_features.tsv \
-  --name STEC \
-  --label SYMP \
-  --group-column t5 \
+  --train-meta test/dataset2_binary/train_metadata.tsv \
+  --test-meta test/dataset2_binary/holdout_metadata.tsv \
+  --features test/dataset2_binary/features.tsv \
+  --id-col Sample.ID \
+  --name example \
+  --label source_summary \
+  --group-column cluster5 \
   --chisq \
   --muvr \
   --feature-model RFC \
-  --k 5000 \
-  --n-jobs -1 \
+  --muvr-n-repetitions 1 \
+  --muvr-n-outer 3 \
+  --muvr-n-inner 3 \
+  --k 256 \
+  --n-jobs 1 \
   --output-dir selected_features_split_muvr
 ```
 
@@ -599,20 +622,21 @@ maGeneLearn train \
 maGeneLearn train \
   --no-split \
   --feature-selection-only \
-  --train-meta test/skip_split/train_metadata.tsv \
-  --test-meta test/skip_split/test_metadata.tsv \
-  --features test/skip_split/full_features.tsv \
-  --name STEC \
-  --label SYMP \
-  --group-column t5 \
+  --train-meta test/dataset2_binary/train_metadata.tsv \
+  --test-meta test/dataset2_binary/holdout_metadata.tsv \
+  --features test/dataset2_binary/features.tsv \
+  --id-col Sample.ID \
+  --name example \
+  --label source_summary \
+  --group-column cluster5 \
   --chisq \
   --boruta \
   --feature-model RFC \
-  --boruta-max-iter 500 \
+  --boruta-max-iter 100 \
   --boruta-perc 95 \
   --boruta-alpha 0.1 \
-  --k 5000 \
-  --n-jobs -1 \
+  --k 256 \
+  --n-jobs 1 \
   --output-dir selected_features_split_boruta
 ```
 
@@ -626,15 +650,20 @@ If your starting feature matrix is already reasonably small, you can skip Step
 ```bash
 maGeneLearn train \
   --feature-selection-only \
-  --meta-file test/skip_chi/metadata.tsv \
-  --chisq-file test/skip_chi/filtered_features.tsv \
-  --features test/skip_chi/filtered_features.tsv \
-  --name STEC \
+  --meta-file test/dataset2_binary/metadata.tsv \
+  --chisq-file test/dataset2_binary/features.tsv \
+  --features test/dataset2_binary/features.tsv \
+  --id-col Sample.ID \
+  --name example \
   --muvr \
   --feature-model RFC \
-  --group-column t5 \
-  --label SYMP \
-  --lineage-col LINEAGE \
+  --muvr-n-repetitions 1 \
+  --muvr-n-outer 3 \
+  --muvr-n-inner 3 \
+  --group-column cluster5 \
+  --label source_summary \
+  --lineage-col plot_MLST \
+  --n-jobs 1 \
   --output-dir skip_chi_muvr
 ```
 
@@ -643,18 +672,20 @@ maGeneLearn train \
 ```bash
 maGeneLearn train \
   --feature-selection-only \
-  --meta-file test/skip_chi/metadata.tsv \
-  --chisq-file test/skip_chi/filtered_features.tsv \
-  --features test/skip_chi/filtered_features.tsv \
-  --name STEC \
+  --meta-file test/dataset2_binary/metadata.tsv \
+  --chisq-file test/dataset2_binary/features.tsv \
+  --features test/dataset2_binary/features.tsv \
+  --id-col Sample.ID \
+  --name example \
   --boruta \
   --feature-model RFC \
-  --boruta-max-iter 500 \
+  --boruta-max-iter 100 \
   --boruta-perc 95 \
   --boruta-alpha 0.1 \
-  --group-column t5 \
-  --label SYMP \
-  --lineage-col LINEAGE \
+  --group-column cluster5 \
+  --label source_summary \
+  --lineage-col plot_MLST \
+  --n-jobs 1 \
   --output-dir skip_chi_boruta
 ```
 
@@ -709,7 +740,7 @@ For Logistic Regression, model files include the LR penalty:
 For example:
 
 ```text
-STEC_boruta_LR_random_under_l2.joblib
+example_boruta_LR_random_under_l2.joblib
 ```
 
 ### 9.3 Test outputs
