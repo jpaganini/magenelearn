@@ -224,6 +224,106 @@ isolate_002  1            1            0
 
 The sample identifiers should match those in the metadata.
 
+#### Reusable sparse CSR inputs
+
+TSV inputs remain supported with the existing defaults. Feature-matrix arguments
+(`--features`, `--chisq-file`, `--features-train`, `--features-test`, and
+`--feature-file`) also accept a CSR bundle directory or its `manifest.json`.
+A bare SciPy `.npz` is insufficient because it lacks sample and feature names.
+
+Assess an input without changing it, then optionally convert it:
+
+```bash
+python scripts/prepare_sparse_input.py \
+  --input test/dataset2_binary/features.tsv
+
+python scripts/prepare_sparse_input.py \
+  --input test/dataset2_binary/features.tsv \
+  --convert auto --output prepared_inputs/binary_features
+```
+
+`--convert never` is the default. `auto` writes CSR only if estimated matrix RAM
+falls by at least 20%; `--min-savings` adjusts that threshold. Dense fixtures may
+correctly be judged unsuitable. `always` forces conversion after validation.
+Conversion requires a new output directory and preserves the source. The
+assessment reports shape, density, nonzero counts, empty rows/columns, value
+ranges, and estimated dense/CSR RAM (not compressed disk size). Invalid IDs,
+malformed rows, nonfinite values, or values that cannot be preserved in float64
+fail explicitly. Integer-looking numeric inputs use int64; inputs containing
+floating literals use float64, preserving integer/float behavior in the pinned
+samplers. Negative/fractional values are reported and preserved, rather
+than silently binarized. Use `--meta-file metadata.tsv` to report overlap and
+unmatched IDs without dropping rows.
+
+For ready tables with embedded labels/groups, identify the non-feature columns:
+
+```bash
+python scripts/prepare_sparse_input.py \
+  --input test/dataset2_binary/ready_train.tsv \
+  --metadata-columns source_summary cluster5 \
+  --convert always --output prepared_inputs/binary_train
+
+maGeneLearn train \
+  --train-meta test/dataset2_binary/train_metadata.tsv \
+  --features-train prepared_inputs/binary_train/manifest.json \
+  --label source_summary --group-column cluster5 \
+  --model RFC --name sparse_example --n-jobs 1 --n-splits-cv 3 \
+  --output-dir runs/sparse_example
+```
+
+Each bundle contains `matrix.npz` (CSR), `samples.tsv` (ordered IDs and optional
+metadata), `features.tsv` (ordered feature IDs), and a versioned `manifest.json`
+with checksums, dtype, dimensions, and provenance. Standalone preparation also
+writes `assessment.json`. Move/copy the entire directory to reuse it elsewhere;
+paths inside the bundle are relative. Existing bundles can be assessed and
+validated with the same script without converting their values again.
+
+Sparse inputs produce sparse outputs under the existing numbered directories:
+
+```text
+01_chisq/<name>_top<k>_features.csr/manifest.json
+02_muvr/<name>_muvr_<feature-model>_<min|mid|max>.csr/manifest.json
+02_boruta/<name>_boruta_<feature-model>_min.csr/manifest.json
+03_final_features/<name>_train.csr/manifest.json
+03_final_features/<name>_test.csr/manifest.json
+```
+
+Reuse a computed Chi-square manifest through `--chisq-file`, selected features
+through `--feature-file`, or final matrices through `--features-train` and
+`--features-test`. Sparse supplied Chi-square inputs must record the training
+IDs used for selection; these must belong to the current training partition.
+Raw TSV conversion does not establish supervised-selection provenance. Never
+reuse selection results derived from evaluation samples. Original TSV workflows
+continue to write their existing TSV filenames. Evaluation results remain TSV.
+
+RFC, SVM and LR fitting/resampling use sparse numeric inputs. The pinned MUVR
+and Boruta integration uses dense arrays after training-row/candidate-feature
+reduction. XGBoost uses a dense adapter **after resampling** so implicit CSR zeros
+retain the existing meaning of observed zero; passing CSR directly to XGBoost
+would instead risk treating omitted entries as missing. Tree SHAP and SVM
+permutation importance also use bounded dense inputs, retaining all features.
+These routes support sparse storage/input, but are not entirely sparse execution.
+
+Sparse inputs use **native CSR resampling**, including SMOTE, ENN and SMOTEENN.
+Equal-distance neighbors can be resolved differently by the pinned dense and
+sparse implementations. Consequently retained sample membership, synthetic
+samples and fitted predictions need not match the TSV/dense route, even with
+the same seed and feature values. Native CSR is intentional to preserve sparse
+scalability; resampling is not densified to reproduce dense tie choices. Each
+representation is validated independently for class retention, alignment and
+metrics. ENN fallback and class-loss failures remain enforced; a sparse input
+does not permit silently disabling sampling or accepting loss of a class.
+New model artifacts record the resampling policy and relevant library versions.
+
+`MAGENELEARN_MAX_DENSE_MB` defaults to 1024 MiB. Dense boundaries fail clearly
+when their estimated allocation/workspace exceeds this limit; selector workspace
+uses a four-array estimate. This is not a total process RAM limit,
+particularly with concurrent workers. Raise it explicitly only when adequate RAM
+is available. Existing explanation skip/failure behavior remains supported.
+New artifacts save feature order, training IDs, input checksum, CV membership,
+seed, concurrency and dense limit; existing plain/dictionary model artifacts
+remain loadable. No preprocessing or new scaling is fitted by conversion.
+
 ---
 
 ## 5. Training options

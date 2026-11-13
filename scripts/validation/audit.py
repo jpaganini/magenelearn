@@ -70,6 +70,16 @@ def main():
                 classes = sorted(expected.source_summary.unique())
                 fitted = check_artifact_probabilities(Path(row["model_file"]), raw, predictions, classes)
                 check_configuration(fitted, row["model"], row["sampling"])
+                from maGeneLearn.matrix_io import is_bundle, read_bundle
+                if is_bundle(row["ready_unlabelled"]):
+                    read_bundle(row["ready_unlabelled"])
+                    read_bundle(row["ready_labelled"])
+                    require(getattr(fitted, "mgl_input_format", None) == "csr", "CSR audit received a TSV-trained model")
+                    require(fitted.mgl_feature_names == list(raw.columns), "CSR artifact feature order")
+                    require(getattr(fitted, "mgl_resampling_policy", None) == ("none" if row["sampling"] == "none" else "native_csr"),
+                            "CSR artifact omitted its native resampling policy")
+                    if row["model"] == "XGBC":
+                        require("dense_zeros" in fitted.named_steps, "XGBoost sparse zeros changed semantics")
                 estimator = fitted.named_steps["model"] if hasattr(fitted, "named_steps") else fitted
                 if row.get("lr_penalty"):
                     require(estimator.penalty == row["lr_penalty"], "Saved LR penalty differs from requested branch")

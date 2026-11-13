@@ -21,6 +21,7 @@ setup(
             "click==8.1.7",
             "pandas==2.1.1",
             "numpy==1.24.3",
+            "scipy==1.13.1",
             "scikit-learn==1.3.0",
             "imbalanced-learn==0.11.0",
             "xgboost==2.0.3",

@@ -114,6 +114,7 @@ import psutil
 
 from scipy import special
 from tqdm import tqdm
+from maGeneLearn.matrix_io import is_bundle, read_bundle, write_bundle, checksum
 
 
 # ---------------------------------------------------------------------------
@@ -1304,6 +1305,43 @@ def main():
         args.meta,
         args.label_col
     )
+
+    if is_bundle(args.features1):
+        X, samples, names, info = read_bundle(args.features1)
+        rows = np.flatnonzero(samples.index.isin(meta_df.index))
+        if not len(rows):
+            raise ValueError("No overlapping samples between sparse matrix and metadata")
+        ids = samples.index[rows]
+        labels = meta_df.loc[ids, args.label_col].to_numpy()
+        if pd.isna(labels).any():
+            raise ValueError("Missing label found among samples used for Chi-square")
+        keep = ~names.str.startswith("Unnamed")
+        if not keep.any():
+            raise ValueError("No usable feature columns found")
+        if not keep.all():
+            logging.info("Dropped %d feature columns beginning with 'Unnamed'", (~keep).sum())
+            X = X[:, keep]
+            names = names[keep]
+        classes, encoded = np.unique(labels, return_inverse=True)
+        if len(classes) < 2:
+            raise ValueError("Chi-square requires at least two classes")
+        logging.info("Sparse Chi-square: %d/%d matrix samples; %d metadata-only samples",
+                     len(ids), X.shape[0], len(meta_df.index.difference(ids)))
+        binary = (X[rows] > 0).astype(np.uint8).tocsr()
+        observed = np.vstack([np.asarray(binary[encoded == c].sum(axis=0)).ravel()
+                              for c in range(len(classes))])
+        scores, pvalues = calculate_chi2_from_counts(observed, np.bincount(encoded))
+        selected, positions = write_pvalues_and_select_topk(
+            os.path.join(args.output_dir, f"{args.name}_pvalues.tsv"), names.tolist(),
+            pvalues, scores, args.k)
+        if not selected:
+            raise ValueError("Chi-square selected no features")
+        write_bundle(os.path.join(args.output_dir, f"{args.name}_top{args.k}_features.csr"),
+                     binary[:, positions], pd.DataFrame(index=ids), selected,
+                     provenance={"stage": "chisq", "training_ids": ids.tolist(),
+                                 "source_manifest": info, "metadata_sha256": checksum(args.meta),
+                                 "binarization": "value > 0", "k": args.k})
+        return
 
     logging.info(
         "Metadata rows: %d",

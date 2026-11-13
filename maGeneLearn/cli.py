@@ -135,6 +135,12 @@ from pathlib import Path
 from typing import List, Sequence
 
 import click
+from maGeneLearn.matrix_io import is_bundle
+
+
+def matrix_output(directory, stem, sparse_output):
+    path = directory / (stem + (".csr" if sparse_output else ".tsv"))
+    return (path / "manifest.json" if sparse_output else path).resolve()
 
 # ---------------------------------------------------------------------------
 # Locate numbered scripts
@@ -287,7 +293,7 @@ def chisq(ctx: Context, features: Path, features2: Path | None) -> None:
     if features2:
         cmd += ["--features2", str(features2.resolve())]
     run(cmd, cwd=d, log=d / "chisq.log", dry=ctx.dry_run, stream=True)
-    ctx.chisq_file = (d / f"{ctx.name}_top{ctx.k}_features.tsv").resolve()
+    ctx.chisq_file = matrix_output(d, f"{ctx.name}_top{ctx.k}_features", is_bundle(features))
 
 
 def feature_selection(ctx: Context, method: str) -> None:
@@ -339,7 +345,8 @@ def feature_selection(ctx: Context, method: str) -> None:
         stream=True
     )
 
-    matches = sorted(d.glob(f"{ctx.name}_{method}_{ctx.feature_model}_min.tsv"))
+    expected = matrix_output(d, f"{ctx.name}_{method}_{ctx.feature_model}_min", is_bundle(ctx.chisq_file))
+    matches = [expected] if expected.exists() else []
     if not matches:
         click.echo("MUVR/boruta output not found", err=True)
         sys.exit(1)
@@ -380,9 +387,10 @@ def extract_features(ctx: Context) -> None:
         run(cmd, cwd=d, log=d / "extract.log", dry=ctx.dry_run, stream=True)
 
         # store absolute paths for downstream steps
-        ctx.feat_train = (d / f"{ctx.name}_train.tsv").resolve()
+        sparse_output = is_bundle(ctx.full_matrix) or is_bundle(ctx.feature_file)
+        ctx.feat_train = matrix_output(d, f"{ctx.name}_train", sparse_output)
         if ctx.test_meta:
-            ctx.feat_test = (d / f"{ctx.name}_test.tsv").resolve()
+            ctx.feat_test = matrix_output(d, f"{ctx.name}_test", sparse_output)
 
     # --------------------------------------------- Chi² without MUVR → error
     elif ctx.chisq_file:
@@ -823,7 +831,7 @@ def test(click_ctx: click.Context, *,
             ])
 
         run(cmd, cwd=d, log=d / "extract_test.log", dry=ctx.dry_run)
-        ctx.feat_test = (d / f"{name}_test.tsv").resolve()
+        ctx.feat_test = matrix_output(d, f"{name}_test", is_bundle(ctx.full_matrix) or is_bundle(feature_file))
 
     # ── 4. branch B – ready table supplied ---------------------------------
     else:

@@ -24,6 +24,34 @@ fixture manifest remain provenance only. No fixtures are rebuilt or rewritten.
 
 ## Coverage
 
+Both profiles now run the matrix twice: the original TSV route and a fresh CSR
+route. Quick requires 40 successful models per representation (80 total), and
+full requires 240 configurations per representation (480 total), plus six saved
+model variants per representation. Coverage and independent artifact audits are
+reported separately as `matrix`/`artifact_audit` and
+`csr_matrix`/`csr_artifact_audit`. The original narrowly scoped ENN exception
+remains unchanged; it is not automatically extended to additional sparse cases.
+CSR runs include eight fresh selectors, four full training workflows, all four
+labelled/unlabelled ready/extraction routes, sampler endpoints and model branches,
+and full-profile SHAP/SVM importance diagnostics. Header-only TSV feature lists
+remain supported alongside sparse matrix inputs.
+
+`test_matrix_io.py` checks portable bundles, checksum/identifier corruption,
+count preservation, conversion modes, and dense allocation limits.
+`test_sparse_input.py` checks all 24 classifier/sampler combinations on CSR for
+both binary and multiclass outcomes,
+including assertions that samplers receive CSR before any XGBoost dense adapter,
+dense-zero XGBoost probability parity, save/load and shuffled feature alignment,
+and independent sparse Chi-square presence-statistic equivalence on count-valued
+inputs. Conversion does not modify the committed fixtures.
+
+To diagnose the sparse matrix alone (not a substitute for the canonical profile):
+
+```bash
+python scripts/validation/matrix.py --input-format csr \
+  --output validation_results/csr_diagnostic --skip-explanations
+```
+
 | Check | Quick | Full |
 |---|---|---|
 | Fixture integrity, focused regressions, three CLI help commands | Required | Required |

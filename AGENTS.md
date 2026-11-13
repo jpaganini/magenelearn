@@ -49,6 +49,36 @@ data integrity, and backward compatibility.
   justification and appropriate before/after validation. Seek maintainer input
   when the intended methodology cannot be established.
 
+## Sparse CSR inputs and outputs
+
+- Accept feature matrices as existing TSV files or portable CSR bundles through
+  the existing feature-matrix options. A bare `.npz` is insufficient: bundles
+  contain `matrix.npz`, ordered `samples.tsv` and `features.tsv`, and a versioned
+  `manifest.json` with checksums, shape, dtype and provenance.
+- Use `maGeneLearn/matrix_io.py` for shared loading, validation and writing;
+  `scripts/prepare_sparse_input.py` assesses inputs and optionally converts them.
+  Preserve original inputs, numeric values, integer/float dtype behavior, and
+  sample/feature order. Do not silently binarize counts or overflow integer casts.
+- Write generated bundles under the existing numbered output directories with
+  `.csr` bundle names. Keep TSV output names for TSV workflows and evaluation
+  tables. Bundles can be reused through the corresponding feature-matrix options;
+  reuse supervised selection only with verified training-partition provenance.
+- Native CSR resampling is the approved sparse behavior. Keep all samplers inside
+  the fitted pipeline and operating on CSR. Equal-distance neighbor ties may
+  change retained IDs, synthetic samples and predictions relative to dense input;
+  do not require dense membership/prediction equality or densify sampling to force
+  it. Independently verify class retention, alignment and metrics in both routes.
+  Preserve ENN fallback checks and class-loss failures; native CSR does not permit
+  changing samplers, dropping classes or broadening the rejection exception.
+- RFC, SVM and LR use sparse fitting inputs. XGBoost converts to dense after
+  sampling to preserve observed-zero semantics. MUVR/Boruta preparation and
+  explanation routes also have bounded dense operations. Honor
+  `MAGENELEARN_MAX_DENSE_MB` (default 1024 MiB), preserve feature alignment, and
+  report these limits; this setting is not a total process memory cap.
+- Record input checksums, feature/sample order, CV membership, seeds, concurrency,
+  resampling policy and dependency versions in new model artifacts. Preserve
+  compatibility with existing plain and dictionary artifacts.
+
 ## Leakage prevention and reproducibility
 
 - Fit learned preprocessing, supervised feature selection, and resampling only
@@ -140,12 +170,25 @@ Validation commands and infrastructure:
 
 Coverage and supporting scripts:
 - `scripts/validate.py` is the canonical local and GitHub Actions entry point.
-- Quick covers 40 model/selection configurations across both outcome types,
-  using sampling `none`. Full covers 240 configurations with all six samplers,
-  plus six additional saved-model variant cases.
-- Both profiles include fixture integrity, regression tests, CLI help, eight
-  fresh selectors, four complete training workflows, and labelled/unlabelled
-  testing through ready-table and extraction routes.
+- Validate TSV and CSR independently. Quick covers 40 model/selection cases per
+  representation (80 total), across both outcome types with sampling `none`.
+  Full covers 240 configurations per representation (480 total), plus six saved
+  model variants per representation (12 total).
+- Both profiles include fixture integrity, regression tests and CLI help. Each
+  representation requires eight fresh selectors, four complete training
+  workflows, and labelled/unlabelled testing through ready-table and extraction
+  routes. Convert existing fixtures into new CSR bundles; do not alter `test/`.
+- `tests/test_matrix_io.py` and `tests/test_sparse_input.py` cover bundle integrity,
+  count/dtype preservation, alignment, dense boundaries and all model/sampler
+  pairs for binary/multiclass CSR inputs. Synthetic unit inputs are not new
+  independent biological validation datasets.
+- For an explicitly requested CSR-only run, use the supporting runners with
+  `--input-format csr`; for example:
+  `python scripts/validation/matrix.py --input-format csr --samplings none random smote random_under enn smoteenn --skip-svm-importance --output validation_results/csr_full_matrix`.
+  Run the applicable CSR runtime/variant stages and independent artifact audit
+  separately. Document exact executed coverage and outstanding stages; a scoped
+  run does not establish a new full canonical profile pass. Do not rerun TSV
+  workflows when the maintainer explicitly limits the run to CSR.
 - Full additionally requires tree SHAP and full-feature SVM permutation
   importance diagnostics on the documented 36/24-sample subsets.
 - `tests/` contains automated regression tests; `scripts/validation/` contains
@@ -177,10 +220,12 @@ Results and failure handling:
   configurations remain required. Report trained models and expected rejections
   separately. JUnit treats a verified rejection as a successful behavioral check,
   with an explicit outcome property, never as skipped or successfully trained.
-- Full requires 246 artifact audits, or 245 after exactly one verified rejection;
-  derive this allowance from verified records, never from files found. Preserve
-  expected-rejection evidence under `expected_rejections/`, separately from
-  `failed_cases/`. Quick remains 40 successful models and 40 audits.
+- Full requires 246 artifact audits per representation, with a reduction of one
+  only in the representation containing the single independently verified
+  rejection allowed above. Do not grant a second exception for CSR. Derive the
+  allowance from verified records, never from files found. Preserve rejection
+  evidence under `expected_rejections/`, separately from `failed_cases/`.
+  Quick requires 40 successful models and 40 audits per representation.
 - Report exact commands, report paths, source revision and dirty state,
   environment, runtime and executed/expected coverage.
 - Report local and hosted results separately. Quick success is not full

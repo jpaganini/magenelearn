@@ -8,9 +8,16 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def matrix_path(path):
+    """Resolve sparse outputs when a validation case uses the shared TSV stem."""
+    path = Path(path)
+    alternative = path.with_suffix(".csr") / "manifest.json"
+    return alternative if not path.exists() and alternative.is_file() else path
+
+
 def checksum(path):
     digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
+    with matrix_path(path).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()

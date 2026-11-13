@@ -78,6 +78,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import label_binarize
 
 import xgboost as xgb
+from maGeneLearn.matrix_io import read_table, model_input, dense_input, is_sparse_frame, DenseZeroAdapter
 try:
     from sampling_validation import check_sampling_classes
 except ModuleNotFoundError as error:
@@ -124,12 +125,23 @@ def predict_with_pipeline(pipeline, X):
     • Aligns column order for XGBoost.
     • Works with any scikit-learn classifier that implements predict_proba().
     """
-    model = pipeline.named_steps.get("model", pipeline)
+    model = pipeline.named_steps.get("model", pipeline) if hasattr(pipeline, "named_steps") else pipeline
+    expected = getattr(pipeline, "mgl_feature_names", None)
+    if expected is not None:
+        if not set(expected) <= set(X.columns):
+            raise ValueError(f"Missing features for prediction: {set(expected) - set(X.columns)}")
+        X = X.loc[:, expected]
+        values = model_input(X)
+        if hasattr(model, "get_booster") and "dense_zeros" not in getattr(pipeline, "named_steps", {}):
+            values = dense_input(values, context="Legacy XGBoost prediction")
+        return pipeline.predict(values), pipeline.predict_proba(values) if hasattr(pipeline, "predict_proba") else None
 
     # ---------- XGBoost branch -------------------------------------------
     if hasattr(model, "get_booster"):
         booster = model.get_booster()
         expected = booster.feature_names
+        if expected is None:
+            raise ValueError("XGBoost artifact lacks feature names and saved feature-order metadata")
 
         missing = set(expected) - set(X.columns)
         if missing:
@@ -140,19 +152,22 @@ def predict_with_pipeline(pipeline, X):
             X = X.drop(columns=list(extra))
 
         X = X[expected]
+        if is_sparse_frame(X):
+            X = pd.DataFrame(dense_input(X, context="Legacy XGBoost prediction"), index=X.index, columns=X.columns)
 
         preds  = pipeline.predict(X)
         probas = pipeline.predict_proba(X)          # keep full matrix
         return preds, probas
 
     # ---------- Generic sklearn branch -----------------------------------
-    preds = pipeline.predict(X)
-
     if hasattr(model, "feature_names_in_"):
         # Align dataframe to training column order before both predict()
         # and predict_proba().
         X = X.reindex(columns=model.feature_names_in_, fill_value=0)
 
+    X = model_input(X)
+    if model.__class__.__name__ == "SVC" and not getattr(model, "_sparse", False):
+        X = dense_input(X, context="Legacy dense SVM prediction")
     preds = pipeline.predict(X)
 
     if hasattr(pipeline, "predict_proba"):
@@ -319,7 +334,7 @@ def run_evaluation(
 
     #Load feature matrix
     logging.info("Reading feature matrix ➜ %s", features_tsv)
-    df = pd.read_csv(features_tsv, sep="\t", index_col=0)
+    df = read_table(features_tsv)
 
     if predict_only:
         logging.info("Prediction-only mode enabled. Skipping evaluation.")
@@ -490,6 +505,8 @@ def run_evaluation(
             else:
                 model_step = clf
             is_xgb = model_step.__class__.__name__.startswith('XGB')
+            if is_xgb and is_sparse_frame(X_tr) and named and "dense_zeros" not in clf.named_steps:
+                clf.steps.insert(len(clf.steps) - 1, ("dense_zeros", DenseZeroAdapter()))
 
             # balanced sample‑weights for XGBoost when *no* oversampling step exists
             fit_kwargs = {}
@@ -502,7 +519,11 @@ def run_evaluation(
                     clf, X_tr, y_tr,
                     context=f"Training evaluation fold {fold}/{n_splits}",
                 )
-                clf.fit(X_tr, y_tr, **fit_kwargs)
+                fit_X = model_input(X_tr)
+                if is_xgb and is_sparse_frame(X_tr) and not named:
+                    fit_X = dense_input(fit_X, context="Legacy XGBoost evaluation fit")
+                clf.fit(fit_X, y_tr, **fit_kwargs)
+                clf.mgl_feature_names = X_tr.columns.tolist()
 
             except Exception as e:
                 before_counts = Counter(y_tr)
@@ -597,7 +618,7 @@ def run_evaluation(
                     else:
                         X_te_aligned = X_te
                     result = permutation_importance(
-                        clf, X_te_aligned, y_te,
+                        clf, dense_input(X_te_aligned, context="SVM permutation importance"), y_te,
                         n_repeats=10,
                         random_state=RSEED,
                         n_jobs=-1,
@@ -646,7 +667,7 @@ def run_evaluation(
 
                     #Shap computation
                     explainer = shap.TreeExplainer(model_step)
-                    shap_vals = explainer.shap_values(X_te)
+                    shap_vals = explainer.shap_values(dense_input(X_te, context="Tree SHAP"))
 
                     # Align SHAP outputs to the original class labels.
                     # This is needed because fitted models may store classes as
@@ -931,7 +952,7 @@ def run_evaluation(
                 for idx, cls in enumerate(class_names):
                     shap.summary_plot(
                         shap_stack[idx],  # SHAP values for this class
-                        X.loc[proba_df.index],
+                        dense_input(X.loc[proba_df.index], context="SHAP summary"),
                         feature_names=X.columns,
                         show=False,
                     )

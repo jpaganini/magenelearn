@@ -5,6 +5,9 @@ import pandas as pd
 from pathlib import Path
 import logging
 from datetime import datetime
+import numpy as np
+from maGeneLearn.matrix_io import (is_bundle, read_bundle, write_bundle, select_columns,
+                                   read_table, write_table_bundle, identifiers)
 
 """
 03_extract_features.py
@@ -107,7 +110,12 @@ def extract_selected_columns(chisq_path: Path,
     Load only the selected k-mer columns and keep sample IDs as the index,
     even when the first header cell is blank.
     """
+    if is_bundle(chisq_path):
+        X, samples, names, _ = read_bundle(chisq_path)
+        X = select_columns(X, names, selected_cols)
+        return pd.DataFrame.sparse.from_spmatrix(X, index=samples.index, columns=selected_cols)
     header = _header_columns(chisq_path)          # list[str]
+    identifiers(header[1:], "Feature")
     pos_usecols = [0]                             # always keep column 0
 
     # map k-mer names → their integer positions
@@ -144,9 +152,12 @@ def extract_selected_columns(chisq_path: Path,
     # column 0 is still present; make it the index
     df.set_index(df.columns[0], inplace=True)
     df.index = df.index.astype(str).str.strip()
+    df.columns = identifiers(df.columns, "Feature")
 
     # 3️⃣  convert only the k-mer columns
-    df.iloc[:, :] = df.iloc[:, :].astype("int8")
+    if not np.isfinite(df.to_numpy()).all():
+        raise ValueError("Nonfinite feature values in extraction input")
+    df.index = identifiers(df.index, "Sample")
 
 # We'll fill these missing columns with zeros later, so the model input shape is preserved.
 
@@ -165,13 +176,10 @@ def load_selected(muvr_path, label_col):
             features: list of feature column names
             labels: pd.Series indexed by sample ID
         """
-    df = pd.read_csv(muvr_path, sep='\t', index_col=0)
-    if label_col in df.columns:
-        # all other columns are selected features
-        features = [c for c in df.columns if c != label_col]
-        return features
-
-    return list(df.columns)
+    if is_bundle(muvr_path):
+        return read_bundle(muvr_path)[2].tolist()
+    columns = identifiers(_header_columns(Path(muvr_path))[1:], "Selected feature")
+    return [c for c in columns if c != label_col]
 
 #def load_split_metadata(meta_path, label_col, group_col):
 def load_split_metadata(meta_path, label_col, group_col=None):
@@ -230,7 +238,7 @@ def extract_features(chisq_file: str, selected_features: list[str]) -> pd.DataFr
 #     return df
 
 
-def process_split(meta_path, chisq_file, features, label_col, group_col, output_dir, suffix, base_name):
+def process_split(meta_path, chisq_file, features, label_col, group_col, output_dir, suffix, base_name, sparse_output=False):
     """
     Load metadata, extract features, merge, and write one split with suffix.
     """
@@ -258,7 +266,14 @@ def process_split(meta_path, chisq_file, features, label_col, group_col, output_
         final_path
     )
 
-    df.to_csv(final_path, sep='\t')
+    if df.empty:
+        raise ValueError("No overlapping samples between metadata and feature matrix")
+    if sparse_output or is_bundle(chisq_file):
+        write_table_bundle(outdir / f"{base_name}_{suffix}.csr", df, [label_col, group_col],
+                           provenance={"stage": "extraction", "source": str(chisq_file),
+                                       "metadata": str(meta_path)})
+    else:
+        df.to_csv(final_path, sep='\t')
 
 def main():
     args = parse_arguments()
@@ -300,7 +315,7 @@ def main():
             args.group_column,
             args.output_dir,
             suffix="train",
-            base_name=args.name
+            base_name=args.name, sparse_output=is_bundle(args.feature_file)
         )
     else:
         logging.info(
@@ -317,7 +332,7 @@ def main():
             args.group_column,
             args.output_dir,
             suffix="test",
-            base_name=args.name
+            base_name=args.name, sparse_output=is_bundle(args.feature_file)
         )
     else:
         logging.info(
@@ -330,7 +345,11 @@ def main():
         outdir = Path(args.output_dir)
         outdir.mkdir(parents=True, exist_ok=True)
         final_path = outdir / f"{args.name}_test.tsv"
-        feats.to_csv(final_path, sep="\t")
+        if is_bundle(args.chisq_file) or is_bundle(args.feature_file):
+            write_table_bundle(outdir / f"{args.name}_test.csr", feats,
+                               provenance={"stage": "extraction", "source": args.chisq_file})
+        else:
+            feats.to_csv(final_path, sep="\t")
         logging.info(
             "Predict-only test table saved to %s",
             final_path

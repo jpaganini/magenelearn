@@ -88,6 +88,8 @@ def write_reports(report, output):
                           "matrix_by_problem": {problem: coverage([r for r in matrix if r.get("dataset") == problem],
                                                                   120 if report["profile"] == "full" else 20)
                                                 for problem in ["binary", "multiclass"]}}
+    csr = [r for r in results if r.get("stage") == "csr_matrix" and r.get("kind") == "model"]
+    report["coverage"]["csr_matrix"] = coverage(csr, 240 if report["profile"] == "full" else 40)
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     suite = ET.Element("testsuite", name="maGeneLearn-" + report["profile"], tests=str(len(results)),
                        failures=str(sum(not accepted(r) for r in results)),
@@ -114,6 +116,9 @@ def write_reports(report, output):
     matrix_counts = report["coverage"]["matrix"]
     lines += ["", "Main model matrix: **%d trained; %d verified expected rejections; %d unexpected failures** (%d required configurations)." %
               (matrix_counts["trained"], matrix_counts["expected_rejections"], matrix_counts["unexpected_failures"], matrix_counts["expected"])]
+    csr_counts = report["coverage"]["csr_matrix"]
+    lines += ["", "CSR model matrix: **%d trained; %d unexpected failures** (%d required configurations)." %
+              (csr_counts["trained"], csr_counts["unexpected_failures"], csr_counts["expected"])]
     lines += ["", "## Expected rejections, failures and omissions", ""]
     for r in results:
         if r["status"] != "passed":
@@ -141,6 +146,7 @@ class Validation:
                        "started_utc": datetime.now(timezone.utc).isoformat(),
                        "seeds": {"split_boruta": 42, "training_evaluation": 50, "muvr": None},
                        "concurrency": {k: self.env[k] for k in self.env if k.endswith("NUM_THREADS") or k == "LOKY_MAX_CPU_COUNT"},
+                       "dense_workspace_limit_mb": self.env.get("MAGENELEARN_MAX_DENSE_MB", "1024"),
                        "limitations": ["Functionality fixtures, not independent performance cohorts",
                                        "Feature selection precedes downstream CV; tuned evaluation is not nested CV",
                                        "MUVR has no explicit seed or group vector",
@@ -174,7 +180,7 @@ class Validation:
                 for index, case in enumerate(cases):
                     label = case.get("check") or "/".join(str(case.get(k, "")) for k in ["kind", "dataset", "selection", "model", "sampling"])
                     self.report["results"].append({**case, "stage": name, "name": name + "/" + label + "/" + str(index), "log": str(log)})
-                if name == "matrix":
+                if name in {"matrix", "csr_matrix"}:
                     errors = coverage_errors(cases, self.profile)
                     if errors:
                         raise ValueError("; ".join(errors))
@@ -221,8 +227,10 @@ class Validation:
 
     def run(self):
         required = {"unit_and_fixture_tests", "help_root", "help_train", "help_test", "matrix", "targeted", "data_edges", "full_train", "artifact_audit"}
+        required.update(["csr_matrix", "csr_targeted", "csr_data_edges", "csr_full_train", "csr_artifact_audit"])
         if self.profile == "full":
             required.update(["lr_l1", "lr_elasticnet", "xgb_lossguide", "svm_importance"])
+            required.update(["csr_lr_l1", "csr_lr_elasticnet", "csr_xgb_lossguide", "csr_svm_importance"])
         self.report["required_stages"] = sorted(required)
         try:
             self.provenance()
@@ -264,6 +272,35 @@ class Validation:
             self.stage("artifact_audit", [sys.executable, HELPERS / "audit.py", "--profile", self.profile,
                                           "--model-index", *existing, "--output", audit], audit / "report.json",
                        expected_artifact_audits(self.report["results"], self.profile))
+            csr_matrix = self.output / "csr_matrix"
+            argv = [sys.executable, HELPERS / "matrix.py", "--input-format", "csr", "--output", csr_matrix, "--skip-svm-importance"]
+            argv += ["--samplings", *SAMPLINGS] if self.profile == "full" else ["--skip-explanations"]
+            self.stage("csr_matrix", argv, csr_matrix / "report.json", 248 if self.profile == "full" else 48)
+            csr_indices = [csr_matrix / "model_index.tsv"]
+            csr_runtime = [sys.executable, HELPERS / "runtime.py", "--input-format", "csr", "--models-run", csr_matrix]
+            for name, flag, expected in [("csr_targeted", None, 32), ("csr_data_edges", "--only-data-edges", 6),
+                                         ("csr_full_train", "--only-orchestration", 4)]:
+                directory = self.output / name
+                self.stage(name, csr_runtime + ["--output", directory] + ([flag] if flag else []),
+                           directory / "report.json", expected)
+            if self.profile == "full":
+                for name, option, value, model in [("csr_lr_l1", "--lr-penalty", "l1", "LR"),
+                                                   ("csr_lr_elasticnet", "--lr-penalty", "elasticnet", "LR"),
+                                                   ("csr_xgb_lossguide", "--xgb-policy", "lossguide", "XGBC")]:
+                    directory = self.output / name
+                    self.stage(name, [sys.executable, HELPERS / "matrix.py", "--input-format", "csr", "--output", directory,
+                                      "--selections", "none", "--models", model, option, value, "--skip-svm-importance"],
+                               directory / "report.json", 2)
+                    csr_indices.append(directory / "model_index.tsv")
+                directory = self.output / "csr_svm_importance"
+                self.stage("csr_svm_importance", csr_runtime + ["--output", directory, "--only-svm-importance"],
+                           directory / "report.json", 2, timeout=18000)
+            csr_existing = [p for p in csr_indices if p.is_file()]
+            audit = self.output / "csr_artifact_audit"
+            self.stage("csr_artifact_audit", [sys.executable, HELPERS / "audit.py", "--profile", self.profile,
+                                              "--model-index", *csr_existing, "--output", audit], audit / "report.json",
+                       246 if self.profile == "full" else 40)
+            existing += csr_existing
             self.combine_indices(existing)
             for rel, original in self.report["fixture_files_sha256"].items():
                 if checksum(ROOT / rel) != original:
@@ -316,11 +353,11 @@ class Validation:
                     elif case.get("artifact"):
                         directory = Path(case["artifact"]).parents[1]
                         name = directory.name
-                    elif stage["name"] == "full_train":
+                    elif stage["name"] in {"full_train", "csr_full_train"}:
                         dataset, _, route = case["check"].split("/")
                         name = dataset + "_" + route
                         directory = path.parent / name
-                    elif stage["name"] == "svm_importance":
+                    elif stage["name"] in {"svm_importance", "csr_svm_importance"}:
                         name = case["check"].split("/")[-1]
                         directory = path.parent / name
                     else:

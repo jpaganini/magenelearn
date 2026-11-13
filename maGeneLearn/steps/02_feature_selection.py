@@ -11,6 +11,8 @@ from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 import logging
 from datetime import datetime
+from maGeneLearn.matrix_io import (is_bundle, read_bundle, read_table, write_table_bundle,
+                                   dense_input, stream_tsv, identifiers)
 
 """
 02_feature_selection.py
@@ -162,6 +164,8 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
 
     train_data_df = pd.read_csv(train_data, sep='\t', header=0, index_col=0)
     train_data_df.index = train_data_df.index.astype(str).str.strip()
+    if not train_data_df.index.is_unique:
+        raise ValueError("Duplicate training metadata sample IDs")
     train_data_muvr = train_data_df.sort_index().drop_duplicates(subset=[group_col, outcome_col],
                                                        keep='last')
 
@@ -183,6 +187,7 @@ def prepare_data_muvr(train_data, filtered_dir,name, group_col, outcome_col, rem
 
     train_data_muvr.to_csv(filtered_output_path, sep='\t')
 
+    train_data_muvr.attrs["training_ids"] = train_data_df.index.tolist()
     return train_data_muvr
 
 def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcome_col, n_repetitions, max_iter, n_outer, n_inner, metric, features_dropout_rate, remove_na=False, n_jobs=1, method='muvr', perc=100, alpha=0.05):
@@ -199,9 +204,29 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     logging.info("Loading Chi² features")
 
     # ------------------------------------------------------------------
-    # Read header first so that we can explicitly set only feature
-    # columns to int8 while leaving the sample-ID column as a string.
+    # Keep identifiers separate from numeric matrix values.
     # ------------------------------------------------------------------
+    if is_bundle(chisq_file):
+        _, _, _, supplied = read_bundle(chisq_file)
+        provenance_ids = supplied.get("provenance", {}).get("training_ids")
+        if provenance_ids is None:
+            raise ValueError("Sparse selector input lacks training_ids provenance; use a computed Chi-square bundle")
+        if not set(provenance_ids) <= set(train_data_muvr.attrs["training_ids"]):
+            raise ValueError("Sparse Chi-square provenance contains samples outside the training partition")
+        chisq_df = read_table(chisq_file)
+    else:
+        chisq_df = None
+
+    if chisq_df is None:
+        chisq_df = load_dense_chisq(chisq_file)
+
+    return run_reduction(train_data_muvr, chisq_df, model, output_dir, name, outcome_col,
+                         n_repetitions, max_iter, n_outer, n_inner, metric,
+                         features_dropout_rate, remove_na, n_jobs, method, perc, alpha,
+                         sparse_output=is_bundle(chisq_file), source=chisq_file)
+
+
+def load_dense_chisq(chisq_file):
     with open(chisq_file, "r") as f:
         header = f.readline().rstrip("\n\r").split("\t")
 
@@ -211,20 +236,24 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
             "and at least one feature column."
         )
 
-    id_col = header[0]
-    feature_names = header[1:]
+    feature_names = identifiers(header[1:], "Feature").tolist()
 
     logging.info(
         "Chi² matrix contains %d feature columns",
         len(feature_names)
     )
 
-    # Explicit int8 dtype prevents pandas from first constructing a much
-    # larger int64 matrix.
-    feature_dtypes = {
-        feature: "int8"
-        for feature in feature_names
-    }
+    # Assess one row at a time before choosing a compact, lossless dtype.
+    # Binary files retain the original int8 memory use; supplied counts do not wrap.
+    _, _, _, assessment = stream_tsv(chisq_file)
+    dtype = "float64"
+    if assessment["fractional_values"] == 0:
+        for candidate in ["int8", "int16", "int32", "int64"]:
+            bounds = np.iinfo(candidate)
+            if bounds.min <= assessment["minimum"] and assessment["maximum"] <= bounds.max:
+                dtype = candidate
+                break
+    feature_dtypes = {feature: dtype for feature in feature_names}
 
     chisq_df = pd.read_csv(
         chisq_file,
@@ -239,6 +268,14 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
         .astype(str)
         .str.strip()
     )
+    return chisq_df
+
+
+def run_reduction(train_data_muvr, chisq_df, model, output_dir, name, outcome_col,
+                  n_repetitions, max_iter, n_outer, n_inner, metric, features_dropout_rate,
+                  remove_na, n_jobs, method, perc, alpha, sparse_output=False, source=None):
+    target_col = outcome_col
+    feature_dtypes = {}
 
     if not chisq_df.index.is_unique:
         raise ValueError(
@@ -332,7 +369,10 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
     else:
         sys.exit("Select a valid model: RFC or XGBC")
 
-    X_muvr = model_input.drop(columns=[target_col]).to_numpy()
+    predictors = model_input.drop(columns=[target_col])
+    X_muvr = dense_input(predictors, context=f"{method} selection", multiplier=4)
+    if isinstance(X_muvr, pd.DataFrame):
+        X_muvr = X_muvr.to_numpy()
     feature_names = model_input.drop(columns=[target_col]).columns
 
     logging.info(
@@ -378,9 +418,16 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
         mid_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_mid.tsv')
         max_features_file_name = os.path.join(output_dir, f'{name}_muvr_{model}_max.tsv')
 
-        df_min.to_csv(min_features_file_name, sep='\t')
-        df_mid.to_csv(mid_features_file_name, sep='\t')
-        df_max.to_csv(max_features_file_name, sep='\t')
+        if not sparse_output:
+            df_min.to_csv(min_features_file_name, sep='\t')
+            df_mid.to_csv(mid_features_file_name, sep='\t')
+            df_max.to_csv(max_features_file_name, sep='\t')
+
+        if sparse_output:
+            for level, table in [("min", df_min), ("mid", df_mid), ("max", df_max)]:
+                write_table_bundle(os.path.join(output_dir, f"{name}_muvr_{model}_{level}.csr"), table,
+                                   provenance={"stage": "muvr", "source": str(source),
+                                               "training_ids": model_input.index.tolist(), "seed": None})
 
         return df_min,df_mid,df_max
     
@@ -417,7 +464,13 @@ def feature_reduction(train_data_muvr,chisq_file, model, output_dir,name, outcom
         os.makedirs(output_dir, exist_ok=True)
         min_features_file_name = os.path.join(output_dir, f'{name}_boruta_{model}_min.tsv')
 
-        df_min.to_csv(min_features_file_name, sep='\t')
+        if not sparse_output:
+            df_min.to_csv(min_features_file_name, sep='\t')
+
+        if sparse_output:
+            write_table_bundle(os.path.join(output_dir, f"{name}_boruta_{model}_min.csr"), df_min,
+                               provenance={"stage": "boruta", "source": str(source),
+                                           "training_ids": model_input.index.tolist(), "seed": 42})
 
         return df_min
 
@@ -484,4 +537,3 @@ if __name__ == "__main__":
             alpha=alpha,
             n_jobs=n_jobs
         )
-

@@ -176,12 +176,26 @@ def require(condition, message):
 
 def one(directory, pattern):
     matches = list(directory.glob(pattern))
+    if not matches and pattern.endswith(".tsv"):
+        matches = list(directory.glob(pattern[:-4] + ".csr/manifest.json"))
     require(len(matches) == 1, "Expected one %s in %s, got %d" % (pattern, directory, len(matches)))
     return matches[0]
 
 
 def frame(path):
     import pandas as pd
+    from common import matrix_path
+    from maGeneLearn.matrix_io import is_bundle, read_table
+    path = matrix_path(path)
+    if is_bundle(path):
+        table = read_table(path)
+        for column in table:
+            if isinstance(table[column].dtype, pd.SparseDtype):
+                values = table[column].sparse.to_dense()
+                table[column] = values.astype("int64") if values.dtype.kind in "biu" else values
+            elif column in {"cluster5", "plot_MLST"}:
+                table[column] = pd.to_numeric(table[column], errors="ignore")
+        return table
     # AP depends on score ranks/ties, including distinctions of one float64 ULP.
     return pd.read_csv(path, sep="\t", index_col=0, float_precision="round_trip")
 
@@ -207,6 +221,16 @@ def export_model_index(report, destination):
             external = fixtures / "dataset3_test" / problem
             paths = [artifact, selected, case / "external_inputs/ready.tsv", case / "external_inputs/predict.tsv",
                      external / "features.tsv", external / "metadata.tsv"]
+            from common import matrix_path
+            paths = [matrix_path(p) for p in paths]
+            if report["arguments"].get("input_format") == "csr":
+                for i, path in enumerate(paths):
+                    if i in {0, 5}:
+                        continue
+                    converted = destination.parent / "csr_inputs" / checksum(path) / "manifest.json"
+                    if converted.is_file():
+                        paths[i] = converted
+            selected = paths[1]
             require(all(p.is_file() for p in paths), "Incomplete saved-model pairing")
             writer.writerow([problem, result["model"], result["selection"], result["sampling"], str(artifact), checksum(artifact),
                              str(selected), checksum(selected), *map(str, paths[2:]),
@@ -425,7 +449,8 @@ class Runner:
         ext = self.args.fixtures / "dataset3_test" / dataset
         truth = frame(ext / "metadata.tsv")
         feature_names = frame(cached["train"]).drop(columns=["source_summary", "cluster5"]).columns.tolist()
-        require(list(fitted.feature_names_in_) == feature_names, "Artifact feature order")
+        stored_names = fitted.mgl_feature_names if hasattr(fitted, "mgl_feature_names") else fitted.feature_names_in_
+        require(list(stored_names) == feature_names, "Artifact feature order")
         if encoder is not None:
             require(list(encoder.classes_) == sorted(truth.source_summary.unique()), "Encoder classes changed")
         else:
@@ -583,9 +608,14 @@ def main():
     parser.add_argument("--xgb-policy", choices=["depthwise", "lossguide"], default="depthwise")
     parser.add_argument("--skip-explanations", action="store_true", help="Explicit partial coverage for faster diagnostic runs")
     parser.add_argument("--skip-svm-importance", action="store_true", help="Explicitly omit expensive SVM permutation importance")
+    parser.add_argument("--input-format", choices=["tsv", "csr"], default="tsv")
     args = parser.parse_args()
     args.fixtures = args.fixtures.resolve()
-    runner = Runner(args)
+    if args.input_format == "csr":
+        from sparse import SparseRunner
+        runner = SparseRunner(args)
+    else:
+        runner = Runner(args)
     sys.exit(runner.run())
 
 

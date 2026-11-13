@@ -4,6 +4,7 @@ import logging
 from collections import Counter
 
 from sklearn.base import clone
+from maGeneLearn.matrix_io import model_input
 
 
 class SamplingClassLoss(ValueError):
@@ -18,7 +19,7 @@ def check_sampling_classes(pipeline, X, y, *, context):
     if sampler is None:
         return
 
-    _, sampled_y = clone(sampler).fit_resample(X, y)
+    _, sampled_y = clone(sampler).fit_resample(model_input(X), y)
     before = Counter(y)
     after = Counter(sampled_y)
     if set(before) != set(after):
@@ -48,7 +49,7 @@ def resolve_enn_neighbors(pipeline, X, y, cv_splits, *, context):
         try:
             for fold, (train_indices, _) in enumerate(cv_splits, 1):
                 check_sampling_classes(
-                    candidate, X.iloc[train_indices], y[train_indices],
+                    candidate, X.iloc[train_indices] if hasattr(X, "iloc") else X[train_indices], y[train_indices],
                     context=f"{context}, fold {fold}",
                 )
             check_sampling_classes(

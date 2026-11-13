@@ -55,6 +55,8 @@ import numpy as np         # Numerical arrays
 import pandas as pd        # DataFrame operations
 from sklearn.utils.class_weight import compute_sample_weight  # For weighted training
 from scipy.sparse import issparse
+from maGeneLearn.matrix_io import (is_bundle, read_bundle, read_table, model_input,
+                                   DenseZeroAdapter, identifiers, checksum, manifest_path)
 import time
 import logging
 from datetime import datetime
@@ -75,6 +77,7 @@ from sklearn.linear_model import LogisticRegression
 import joblib               # For model serialization
 from sklearn.preprocessing import LabelEncoder # For encoding string labels
 import optuna
+from importlib.metadata import version
 from sklearn.model_selection import cross_validate
 try:
     from sampling_validation import resolve_enn_neighbors
@@ -145,7 +148,7 @@ def setup_logging(output_dir, name, model, sampling):
     return log_file
 
 def load_data(path, label_col, group_col):
-    df = pd.read_csv(path, sep='\t', index_col=0)
+    df = read_table(path)
     if label_col not in df.columns:
         sys.exit(f"Error: label column '{label_col}' not found in input.")
     if group_col not in df.columns:
@@ -153,6 +156,10 @@ def load_data(path, label_col, group_col):
     y = df[label_col].values
     groups = df[group_col].values
     X = df.drop(columns=[label_col, group_col])
+    if df[[label_col, group_col]].isna().any().any() or (df[[label_col, group_col]] == "").any().any():
+        raise ValueError("Missing label/group values")
+    identifiers(df.index, "Sample")
+    identifiers(X.columns, "Feature")
     return X, y, groups
 
 
@@ -400,8 +407,13 @@ def main():
         le = LabelEncoder()
         y = le.fit_transform(y)
 
-    if args.sampling in ['smote', 'smoteenn', 'enn'] and issparse(X):
-        sys.exit(f"Error: {args.sampling.upper()} cannot be applied to a sparse matrix. Densify first.")
+    feature_names = X.columns.tolist()
+    sample_ids = X.index.tolist()
+    X = model_input(X)
+    sampling_policy = "none" if args.sampling == "none" else "native_csr" if issparse(X) else "dense"
+    logging.info("Resampling policy: %s", sampling_policy)
+    if sampling_policy == "native_csr" and args.sampling in {"smote", "enn", "smoteenn"}:
+        logging.info("Native CSR nearest-neighbor ties may yield different sample membership than dense input.")
 
     pipeline = prepare_pipeline(
         args.model,
@@ -410,6 +422,9 @@ def main():
         lr_penalty=args.lr_penalty,
         xgb_policy=args.xgb_policy
     )
+    if issparse(X) and args.model == "XGBC":
+        # Keep resampling sparse, then make zeros explicit at the estimator boundary.
+        pipeline.steps.insert(len(pipeline.steps) - 1, ("dense_zeros", DenseZeroAdapter()))
 
     logging.info("Model: %s | Sampling: %s", args.model, args.sampling)
     logging.info("Pipeline:\n%s", pipeline)
@@ -446,6 +461,16 @@ def main():
             f"CV_{args.name}_{args.model}_{args.sampling}.tsv"
         )
 
+    best_model.mgl_feature_names = feature_names
+    best_model.mgl_training_ids = sample_ids
+    best_model.mgl_input_format = "csr" if issparse(X) else "tsv"
+    best_model.mgl_resampling_policy = sampling_policy
+    best_model.mgl_resampling_versions = {name: version(name) for name in ["scikit-learn", "imbalanced-learn", "scipy"]}
+    best_model.mgl_input_sha256 = checksum(manifest_path(args.features) if is_bundle(args.features) else args.features)
+    best_model.mgl_cv_splits = cv_splits
+    best_model.mgl_seed = RSEED
+    best_model.mgl_n_jobs = args.n_jobs
+    best_model.mgl_dense_limit_mb = os.environ.get("MAGENELEARN_MAX_DENSE_MB", "1024")
     if args.sampling in ['smote', 'enn', 'smoteenn'] or args.model == "XGBC":
         joblib.dump({"model": best_model, "label_encoder": le}, model_path)
     else:

@@ -32,9 +32,16 @@ def main():
     modes.add_argument("--only-svm-importance", action="store_true", help="Validate all predictors on smaller, documented explanation-only subsets")
     modes.add_argument("--only-data-edges", action="store_true", help="Check missing predictors, unseen outcomes, and empty Boruta selection")
     parser.add_argument("--models-run", type=Path, help="Model outputs from the current validation run")
+    parser.add_argument("--input-format", choices=["tsv", "csr"], default="tsv")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     os.environ.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", MPLBACKEND="Agg", LOKY_MAX_CPU_COUNT="1")
+    def execute(argv, **kwargs):
+        if args.input_format == "csr":
+            from sparse import sparse_arguments
+            argv[:] = sparse_arguments(argv, args.output / "csr_inputs")
+        return run_process(argv, **kwargs)
+
     import numpy as np
     import optuna
     import pandas as pd
@@ -64,7 +71,7 @@ def main():
         def command(argv, output):
             output.mkdir()
             with (output / "command.log").open("x") as handle:
-                result = run_process(argv, cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT),
+                result = execute(argv, cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT),
                     "LOKY_MAX_CPU_COUNT": "1", "MPLBACKEND": "Agg", "MPLCONFIGDIR": str(args.output.resolve() / "matplotlib_cache")},
                     stdout=handle, stderr=subprocess.STDOUT)
             (output / "command.json").write_text(json.dumps({"command": argv, "exit_code": result.returncode}, indent=2) + "\n")
@@ -170,7 +177,7 @@ def main():
                 env = {**os.environ, "LOKY_MAX_CPU_COUNT": "1", "MPLBACKEND": "Agg",
                        "MPLCONFIGDIR": str(args.output.resolve() / "matplotlib_cache")}
                 with (output / "command.log").open("x") as handle:
-                    completed = run_process(argv, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT, timeout=7200)
+                    completed = execute(argv, cwd=ROOT, env=env, stdout=handle, stderr=subprocess.STDOUT, timeout=7200)
                 (output / "command.json").write_text(json.dumps({"command": argv, "exit_code": completed.returncode,
                                                                "LOKY_MAX_CPU_COUNT": "1"}, indent=2) + "\n")
                 require(completed.returncode == 0, "SVM importance failed; see " + str(output / "command.log"))
@@ -207,7 +214,7 @@ def main():
                         argv += ["--train-meta", str((directory / "train_metadata.tsv").resolve()),
                                  "--test-meta", str((directory / "holdout_metadata.tsv").resolve())]
                     with (output / "command.log").open("x") as log:
-                        completed = run_process(argv, cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT),
+                        completed = execute(argv, cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT),
                             "MPLBACKEND": "Agg", "MPLCONFIGDIR": str(args.output.resolve() / "matplotlib_cache")}, stdout=log, stderr=subprocess.STDOUT)
                     (output / "command.json").write_text(json.dumps({"command": argv, "exit_code": completed.returncode}, indent=2) + "\n")
                     require(completed.returncode == 0, "Full training failed; see " + str(output / "command.log"))
@@ -249,7 +256,7 @@ def main():
     for name, arguments, message in cases:
         def invalid_check(name=name, arguments=arguments, message=message):
             argv = [sys.executable, "-c", "from maGeneLearn.cli import cli; cli()"] + arguments + ["--output-dir", str(args.output / name)]
-            result = run_process(argv, cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT)}, capture_output=True, text=True)
+            result = execute(argv, cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT)}, capture_output=True, text=True)
             (args.output / (name + ".log")).write_text(result.stdout + result.stderr)
             if result.returncode == 0 or message not in result.stdout + result.stderr:
                 raise ValueError("Expected clear CLI rejection: " + message)
@@ -270,6 +277,9 @@ def main():
     for dataset in ["dataset1_multiclass", "dataset2_binary"]:
         data = pd.read_csv(args.fixtures / dataset / "ready_train.tsv", sep="\t", index_col=0)
         X = data.drop(columns=["source_summary", "cluster5"])
+        if args.input_format == "csr":
+            from scipy.sparse import csr_matrix
+            X = csr_matrix(X)
         y = LabelEncoder().fit_transform(data.source_summary)
         groups = data.cluster5.to_numpy()
         folds = training.get_cv_splits(X, y, groups, 3)
@@ -285,10 +295,10 @@ def main():
                             pipeline.set_params(sampler__n_neighbors=neighbors)
                         elif sampler == "smoteenn":
                             pipeline.set_params(sampler__smote__k_neighbors=neighbors, sampler__enn__n_neighbors=neighbors)
-                        sampled_X, sampled_y = pipeline.named_steps["sampler"].fit_resample(X.iloc[indices], y[indices])
+                        sampled_X, sampled_y = pipeline.named_steps["sampler"].fit_resample(X.iloc[indices] if hasattr(X, "iloc") else X[indices], y[indices])
                         if set(sampled_y) != set(y):
                             raise ValueError("Sampler removed an entire class")
-                        counts.append({"neighbors": neighbors, "classes": np.bincount(sampled_y).tolist(), "rows": len(sampled_X)})
+                        counts.append({"neighbors": neighbors, "classes": np.bincount(sampled_y).tolist(), "rows": sampled_X.shape[0]})
                 return counts
             check(dataset + "/sampler/" + sampler, sampling_check)
 
@@ -320,7 +330,11 @@ def main():
                           "model__subsample": 1.0, "model__colsample_bytree": 1.0,
                           "model__reg_alpha": 1e-8, "model__reg_lambda": 1.0}
                 trial = optuna.trial.FixedTrial(params)
-                score, _ = training.optuna_objective(trial, training.prepare_pipeline("XGBC", "none", 1, xgb_policy=policy),
+                pipeline = training.prepare_pipeline("XGBC", "none", 1, xgb_policy=policy)
+                if args.input_format == "csr":
+                    from maGeneLearn.matrix_io import DenseZeroAdapter
+                    pipeline.steps.insert(0, ("dense_zeros", DenseZeroAdapter()))
+                score, _ = training.optuna_objective(trial, pipeline,
                     X, y, groups, folds, ["balanced_accuracy"], "XGBC", "none", 1)
                 if not np.isfinite(score):
                     raise ValueError("Nonfinite XGBC score")
